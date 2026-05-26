@@ -1,0 +1,69 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: hotelrev
+      POSTGRES_PASSWORD: hotelrev
+      POSTGRES_DB: hotelrev
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hotelrev"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  app:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql://hotelrev:hotelrev@postgres:5432/hotelrev
+      REDIS_URL: redis://redis:6379/0
+      JWT_SECRET: hotel-review-v3-secret-key-2026
+      ENCRYPTION_KEY: a32byte-encryption-key-for-ota!!
+      AI_API_KEY: ${AI_API_KEY:-}
+      AI_PROVIDER: ${AI_PROVIDER:-deepseek}
+      BROWSER_HEADLESS: "true"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./backend/app:/app/app
+
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.worker
+    environment:
+      DATABASE_URL: postgresql://hotelrev:hotelrev@postgres:5432/hotelrev
+      REDIS_URL: redis://redis:6379/0
+      JWT_SECRET: hotel-review-v3-secret-key-2026
+      ENCRYPTION_KEY: a32byte-encryption-key-for-ota!!
+      AI_API_KEY: ${AI_API_KEY:-}
+      AI_PROVIDER: ${AI_PROVIDER:-deepseek}
+      BROWSER_HEADLESS: "true"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+volumes:
+  pgdata:
