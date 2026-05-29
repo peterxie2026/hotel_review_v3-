@@ -1,0 +1,19 @@
+[Unit]
+Description=Hotel Review Backend Service
+After=network.target
+
+[Service]
+Type=simple
+User=www-data
+WorkingDirectory=/opt/hotel_review_v3/backend
+EnvironmentFile=/opt/hotel_review_v3/backend/.env
+ExecStart=/opt/hotel_review_v3/backend/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000
+Restart=always
+RestartSec=5
+
+# 安全加固
+PrivateTmp=true
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
