@@ -4,16 +4,18 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from sqlalchemy.orm import Session
 from app.database import get_db
-from app.schemas import ScrapeTaskResponse, UserInfo
+from app.schemas import ScrapeTaskResponse, SubmitTaskResponse, UserInfo
 from app.api.auth import get_current_user
-from app.models import Hotel, OTAAccount, ScrapeTask, TaskStatus, Review, ReviewStatus
+from app.models import Hotel, OTAAccount, ScrapeTask, SubmitTask, TaskStatus, Review, ReviewStatus, Reply, ReplyStatus
 from app.services.crypto_service import decrypt_password
 import random
+import json
 
 router = APIRouter(prefix="/api/v1", tags=["抓取任务"])
 
 # 存储正在运行的后台任务
 _running_tasks: dict = {}
+_running_submit_tasks: dict = {}
 
 # 演示点评数据
 DEMO_REVIEWS = [
@@ -128,6 +130,7 @@ async def _run_scrape(task_id: str, hotel_id: str, platform: str):
                 Review.platform == platform,
                 Review.platform_review_id == r.platform_review_id,
             ).first()
+            ota_status = ReviewStatus.replied if r.has_reply else ReviewStatus.pending_reply
             if not existing:
                 review = Review(
                     hotel_id=hotel_id,
@@ -139,13 +142,12 @@ async def _run_scrape(task_id: str, hotel_id: str, platform: str):
                     content=r.content,
                     check_in_date=r.check_in_date,
                     review_date=r.review_date,
-                    status=ReviewStatus.replied if r.has_reply else ReviewStatus.pending_reply,
+                    status=ota_status,
                 )
                 db.add(review)
                 new_count += 1
-            elif existing and r.has_reply and existing.status != ReviewStatus.replied:
-                # 更新已有记录：如果OTA上已经回复了，同步状态
-                existing.status = ReviewStatus.replied
+            elif existing.status != ota_status:
+                existing.status = ota_status
 
         task = db.query(ScrapeTask).filter(ScrapeTask.id == task_id).first()
         if task:
@@ -283,3 +285,154 @@ def generate_demo_reviews(hotel_id: str, count: int = 8,
     db.commit()
     db.refresh(task)
     return ScrapeTaskResponse.model_validate(task)
+
+
+# ===== OTA回复提交任务 =====
+
+async def _set_submit_progress(task_id: str, message: str, status: TaskStatus = None):
+    """更新提交任务进度"""
+    from app.database import SessionLocal
+    db = SessionLocal()
+    try:
+        task = db.query(SubmitTask).filter(SubmitTask.id == task_id).first()
+        if task:
+            task.progress_message = message
+            if status:
+                task.status = status
+            db.commit()
+    finally:
+        db.close()
+
+
+async def _run_submit(task_id: str, hotel_id: str, review_pairs: list):
+    """后台执行OTA回复提交"""
+    from app.database import SessionLocal
+    from app.browser import get_browser_pool
+    from app.ota import ADAPTERS
+
+    db = SessionLocal()
+    try:
+        task = db.query(SubmitTask).filter(SubmitTask.id == task_id).first()
+        if task:
+            task.status = TaskStatus.running
+            task.progress_message = "正在准备..."
+            task.started_at = datetime.utcnow()
+            db.commit()
+
+        # 获取OTA账号
+        await _set_submit_progress(task_id, "正在查找OTA账号...")
+        account = db.query(OTAAccount).filter(
+            OTAAccount.hotel_id == hotel_id,
+            OTAAccount.platform == "ctrip",
+            OTAAccount.is_active == True,
+        ).first()
+        if not account:
+            raise Exception("OTA账号不存在")
+
+        password = decrypt_password(account.encrypted_password or "")
+        cookies_json = account.cookies_json
+
+        # 启动浏览器
+        await _set_submit_progress(task_id, "正在启动浏览器...")
+        pool = await get_browser_pool()
+        context = await pool.get_context(account.id, cookies_json)
+        page = await context.new_page()
+
+        adapter_cls = ADAPTERS.get("ctrip")
+        if not adapter_cls:
+            raise Exception("不支持的平台: ctrip")
+        adapter = adapter_cls()
+
+        try:
+            await _set_submit_progress(task_id, "正在登录携程后台...")
+            logged_in = await adapter.login(page, account.username, password)
+            if not logged_in:
+                raise Exception("登录失败：请检查OTA账号")
+
+            # 保存cookie
+            new_cookies = json.dumps(await context.cookies())
+            account.cookies_json = new_cookies
+            account.last_login_at = datetime.utcnow()
+            db.commit()
+
+            # 执行提交
+            await _set_submit_progress(task_id, f"正在提交回复({len(review_pairs)}条)...")
+            results = await adapter.submit_replies_batch(page, review_pairs)
+
+            # 统计结果并更新DB
+            success_count = 0
+            failed_count = 0
+            now = datetime.utcnow()
+
+            for r in results:
+                idx = r["index"]
+                pair = review_pairs[idx]
+                reply_id = pair.get("reply_id")
+                review_id = pair.get("review_id")
+
+                if r.get("success"):
+                    # 更新reply状态
+                    reply = db.query(Reply).filter(Reply.id == reply_id).first()
+                    if reply:
+                        reply.status = ReplyStatus.submitted
+                        reply.submitted_at = now
+                    # 更新review状态
+                    review = db.query(Review).filter(Review.id == review_id).first()
+                    if review:
+                        review.status = ReviewStatus.replied
+                    success_count += 1
+                else:
+                    reply = db.query(Reply).filter(Reply.id == reply_id).first()
+                    if reply:
+                        reply.status = ReplyStatus.failed
+                    failed_count += 1
+
+            db.commit()
+
+            task = db.query(SubmitTask).filter(SubmitTask.id == task_id).first()
+            if task:
+                task.status = TaskStatus.completed
+                task.success_count = success_count
+                task.failed_count = failed_count
+                task.results_json = json.dumps(results, ensure_ascii=False)
+                task.progress_message = f"完成：成功{success_count}条，失败{failed_count}条"
+                task.completed_at = datetime.utcnow()
+
+            db.commit()
+
+        finally:
+            await page.close()
+
+    except Exception as e:
+        task = db.query(SubmitTask).filter(SubmitTask.id == task_id).first()
+        if task:
+            task.status = TaskStatus.failed
+            task.error_message = str(e)
+            task.progress_message = f"失败: {str(e)[:100]}"
+            task.completed_at = datetime.utcnow()
+        db.commit()
+    finally:
+        db.close()
+        _running_submit_tasks.pop(task_id, None)
+
+
+@router.get("/submit-tasks/{task_id}", response_model=SubmitTaskResponse)
+def get_submit_task_status(task_id: str, current_user: UserInfo = Depends(get_current_user), db: Session = Depends(get_db)):
+    task = db.query(SubmitTask).filter(SubmitTask.id == task_id).first()
+    if not task:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    hotel = db.query(Hotel).filter(Hotel.id == task.hotel_id, Hotel.user_id == current_user.id).first()
+    if not hotel:
+        raise HTTPException(status_code=403, detail="无权访问此任务")
+    return SubmitTaskResponse.model_validate(task)
+
+
+@router.get("/hotels/{hotel_id}/submit-tasks")
+def list_submit_tasks(hotel_id: str, current_user: UserInfo = Depends(get_current_user), db: Session = Depends(get_db)):
+    hotel = db.query(Hotel).filter(Hotel.id == hotel_id, Hotel.user_id == current_user.id, Hotel.is_active == True).first()
+    if not hotel:
+        raise HTTPException(status_code=404, detail="酒店不存在")
+    tasks = db.query(SubmitTask).filter(
+        SubmitTask.hotel_id == hotel_id
+    ).order_by(SubmitTask.created_at.desc()).limit(10).all()
+    return [SubmitTaskResponse.model_validate(t) for t in tasks]

@@ -196,3 +196,21 @@ class ScrapeTask(Base):
     started_at = Column(DateTime, nullable=True)
     completed_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class SubmitTask(Base):
+    __tablename__ = "submit_tasks"
+
+    id = Column(String(36), primary_key=True, default=gen_uuid)
+    hotel_id = Column(String(36), ForeignKey("hotels.id"), nullable=False)
+    platform = Column(SAEnum(OTAPlatform), nullable=False)
+    status = Column(SAEnum(TaskStatus), default=TaskStatus.pending)
+    total_count = Column(Integer, default=0)
+    success_count = Column(Integer, default=0)
+    failed_count = Column(Integer, default=0)
+    results_json = Column(Text, nullable=True)
+    error_message = Column(Text, nullable=True)
+    progress_message = Column(String(255), nullable=True)
+    started_at = Column(DateTime, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())

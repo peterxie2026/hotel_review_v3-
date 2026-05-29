@@ -95,7 +95,7 @@ async def manual_login(hotel_id: str, account_id: str,
     page = await context.new_page()
 
     login_urls = {
-        "ctrip": "http://ebooking.ctrip.com/",
+        "ctrip": "https://ebooking.ctrip.com/",
         "meituan": "https://e.meituan.com/",
         "fliggy": "https://hotel.fliggy.com/",
     }

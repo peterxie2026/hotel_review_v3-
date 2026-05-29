@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import re
 from datetime import datetime
 from typing import List
@@ -10,21 +11,20 @@ class CtripAdapter(OTAAdapter):
     platform = "ctrip"
 
     async def login(self, page: Page, username: str, password: str) -> bool:
-        """登录携程ebooking后台 - 优先使用cookie，失败时尝试自动登录"""
-        # 直接尝试访问点评列表页，利用已有cookie
+        """登录携程ebooking后台 - 优先检查已有cookie，失效时尝试自动登录"""
+        # 如果cookie已经有效，直接返回成功
         if await self.check_login_status(page):
             return True
 
         # Cookie失效，尝试自动填表登录
+        if not username or not password:
+            return False
+
         try:
             await page.goto("https://ebooking.ctrip.com/", wait_until="domcontentloaded", timeout=30000)
             await asyncio.sleep(3)
 
-            # 检查是否已经登录（可能是cookie部分有效）
-            if await self._quick_login_check(page):
-                return True
-
-            # 找用户名输入框
+            # 填写用户名
             for user_sel in ["input[name='username']", "input[name='userName']", "input[name='account']",
                              "input#userName", "input#username", "input[type='text']"]:
                 try:
@@ -33,6 +33,7 @@ class CtripAdapter(OTAAdapter):
                 except Exception:
                     continue
 
+            # 填写密码
             for pwd_sel in ["input[name='password']", "input[name='passWord']", "input#password",
                             "input[type='password']"]:
                 try:
@@ -73,27 +74,29 @@ class CtripAdapter(OTAAdapter):
             return False
 
     async def check_login_status(self, page: Page) -> bool:
-        """检查是否已登录 - 访问点评列表页看是否被重定向到登录页"""
+        """检查是否已登录 - 先访问首页看cookie是否有效，再尝试点评页"""
         try:
-            # 直接访问需登录的点评列表页
-            await page.goto("https://ebooking.ctrip.com/comment/commentList", wait_until="domcontentloaded", timeout=30000)
-            await asyncio.sleep(3)
+            # 先访问ebooking首页，检查cookie是否有效
+            await page.goto("https://ebooking.ctrip.com/", wait_until="domcontentloaded", timeout=30000)
+            await asyncio.sleep(2)
             url = page.url.lower()
             title = await page.title()
-            # 被重定向到登录页
+
+            # 被重定向到登录页 = cookie失效
             if "login" in url or "登录" in title:
                 return False
-            # 成功访问ebooking页面
-            if "ebooking" in url or "ebooking" in title.lower() or "comment" in url:
+
+            # 仍在ebooking域名下 = cookie有效
+            if "ebooking" in url:
                 return True
-            # 进一步检查页面内容
-            try:
-                body = await page.inner_text("body")
-                if "酒店" in body and ("点评" in body or "评论" in body or "首页" in body):
-                    return True
-            except Exception:
-                pass
-            return "login" not in url
+
+            # 尝试直接访问需登录的点评列表页进一步验证
+            await page.goto("https://ebooking.ctrip.com/comment/commentList", wait_until="domcontentloaded", timeout=30000)
+            await asyncio.sleep(2)
+            url = page.url.lower()
+            if "login" in url:
+                return False
+            return "ebooking" in url or "comment" in url
         except Exception:
             return False
 
@@ -137,7 +140,7 @@ class CtripAdapter(OTAAdapter):
 
         reviews = []
 
-        # 按优先级尝试不同标签页
+        # 优先抓待回复点评，再尝试差评，最后兜底抓全部点评
         tabs_to_try = [
             ("待回复", ["text=待回复", "a:has-text('待回复')", "span:has-text('待回复')", "div:has-text('待回复')"]),
             ("差评", ["text=差评", "a:has-text('差评')", "span:has-text('差评')", "div:has-text('差评')"]),
@@ -145,7 +148,7 @@ class CtripAdapter(OTAAdapter):
         ]
 
         for tab_name, tab_selectors in tabs_to_try:
-            # 点击对应标签
+            # 点击对应标签（全部点评是默认视图，不需要点击）
             if tab_name != "全部点评":
                 clicked = False
                 for tab_sel in tab_selectors:
@@ -187,6 +190,8 @@ class CtripAdapter(OTAAdapter):
                         if (pubCount !== 1) continue;
                         if (!text.includes('设施') && !text.includes('卫生')) continue;
                         if (text.length < 80 || text.length > 3000) continue;
+                        // 跳过补充点评（会和主点评重复）
+                        if (text.includes('补充点评:')) continue;
 
                         const key = text.substring(0, 80);
                         if (seen.has(key)) continue;
@@ -212,29 +217,40 @@ class CtripAdapter(OTAAdapter):
             return []
 
     def _parse_review_text(self, text: str) -> RawReview | None:
-        """从单条点评的文本块中解析信息 - text必须只包含一条点评"""
+        """解析携程ebooking单条点评文本
+
+        携程页面每条点评的文本格式（从上到下）：
+            [客人名]
+            [空行]
+            [入住年月: YYYY年MM月]
+            [空行]
+            [房型]
+            [空行]
+            [可选: 反馈异常点评 / AI点评保护]
+            [可选: 异常评分数字]
+            [子评分: 设施 X, 卫生 X, 环境 X, 服务 X]  ← 可能缺个别项
+            [空行]
+            [点评正文 - 可能多行]
+            [空行]
+            发表于: YYYY年MM月DD日HH:MM:SS
+            [空行]
+            [可选: 酒店回复内容: + 回复正文 + 回复员工行]
+        """
         lines = text.split('\n')
-        if len(lines) < 3:
+        if len(lines) < 4:
             return None
 
-        # 找到"发表于:"行 - 必须是倒数几行内，因为发表于后面只有回复内容
-        pub_line_idx = -1
+        # 1. 找到"发表于:"行
+        pub_idx = -1
         for i in range(len(lines) - 1, -1, -1):
             if re.search(r'发表于:\s*\d{4}年', lines[i]):
-                pub_line_idx = i
+                pub_idx = i
                 break
-
-        if pub_line_idx < 0:
+        if pub_idx < 0:
             return None
 
-        # 确保发表于后面没有另一条点评的元数据（说明这不是合理的块）
-        after_lines = lines[pub_line_idx + 1:]
-        after_text = '\n'.join(after_lines)
-        if re.search(r'^(?:设施|卫生|环境|服务)\s+[\d.]+$', after_text, re.MULTILINE):
-            return None  # 发表于后面的内容包含另一条点评的评分数据
-
         # 提取发表日期
-        m = re.search(r'发表于:\s*(\d{4})年(\d{1,2})月(\d{1,2})日\s*(\d{1,2}):(\d{2}):(\d{2})', lines[pub_line_idx])
+        m = re.search(r'发表于:\s*(\d{4})年(\d{1,2})月(\d{1,2})日\s*(\d{1,2}):(\d{2}):(\d{2})', lines[pub_idx])
         if m:
             try:
                 review_date = datetime(int(m.group(1)), int(m.group(2)), int(m.group(3)),
@@ -244,81 +260,106 @@ class CtripAdapter(OTAAdapter):
         else:
             review_date = datetime.now()
 
-        # 从"发表于:"开始，向上按段落区块扫描
-        # 区块结构（从下到上）：
-        #   发表于: [time]
-        #   [空行]
-        #   [点评正文 - 可能多行连续无空行]
-        #   [空行]
-        #   [子评分: 服务 X, 卫生 X, 环境 X, 设施 X]
-        #   [总评分: 数字]
-        #   [可选: 反馈异常点评]
-        #   [空行]
-        #   [房型]
-        #   [空行]
-        #   [入住年月]
-        #   [空行]
-        #   [客人名]
+        # 2. 检测已有回复（在"发表于:"之后）
+        after_text = '\n'.join(lines[pub_idx + 1:pub_idx + 20])
+        has_hotel_reply = '酒店回复内容' in after_text
 
-        j = pub_line_idx - 1
-
-        # 跳过发表于前面的空行
+        # 3. 向上扫描：从"发表于:"往前，跳过空行 → 点评正文 → 空行 → 评分区 → 元数据区
+        j = pub_idx - 1
         while j >= 0 and not lines[j].strip():
             j -= 1
 
-        # 收集点评正文（非空的连续行）
+        # 收集点评正文
         content_lines = []
         while j >= 0 and lines[j].strip():
             content_lines.insert(0, lines[j].strip())
             j -= 1
         content = '\n'.join(content_lines).strip()
 
-        # 跳过正文前面的空行
+        # 验证正文有效性
+        if not content or len(content) < 3:
+            return None
+        if content.startswith('尊敬的') and '回复员工' in content:
+            return None
+        if content.startswith('补充点评') or '\n补充点评' in content:
+            return None
+        if len(content) > 2000:
+            return None
+
+        # 跳过正文前空行
         while j >= 0 and not lines[j].strip():
             j -= 1
 
-        # 接下来应该是评分块：服务/卫生/环境/设施 + 总评分
-        rating = 3.0
-        found_rating_block = False
+        # 4. 解析评分区：子评分 + 可能的前置异常分
+        rating = None
+        sub_ratings = {}
+        abnormal_score = None
         for _ in range(10):
             if j < 0:
                 break
             line = lines[j].strip()
             if not line:
                 break
-            if re.match(r'^(设施|卫生|环境|服务)\s+([\d.]+)$', line):
-                found_rating_block = True
+            # 子评分: 设施 X, 卫生 X, 环境 X, 服务 X
+            sm = re.match(r'^(设施|卫生|环境|服务)\s+([\d.]+)$', line)
+            if sm:
+                sub_ratings[sm.group(1)] = float(sm.group(2))
                 j -= 1
                 continue
-            m = re.match(r'^([\d.]+)$', line)
-            if m and float(m.group(1)) <= 5:
-                rating = float(m.group(1))
-                found_rating_block = True
+            # 异常分（紧接在"反馈异常点评"下方）
+            am = re.match(r'^([\d.]+)$', line)
+            if am:
+                val = float(am.group(1))
+                if val <= 5:
+                    abnormal_score = val
                 j -= 1
                 continue
-            if line == '反馈异常点评' or 'AI点评保护' in line or '此点评不计入' in line:
+            # 主评分显示（如 "4.8超棒"、"5超棒"）——在子评分上方，需跳过
+            main_rating = re.match(r'^(\d+(?:\.\d+)?)([一-龥]{1,4})$', line)
+            if main_rating:
+                val = float(main_rating.group(1))
+                if val <= 5:
+                    rating = val  # 主评分比子评分均值更准确
                 j -= 1
                 continue
-            # 非评分行，说明评分块结束
+            # 状态标签
+            if line in ('反馈异常点评', 'AI点评保护') or '不计入' in line:
+                j -= 1
+                continue
+            # 非评分行，结束
             break
 
-        # 跳过评分块前空行
+        # 计算实际评分：主评分（携程显示分）优先，其次子评分均值，最后异常分
+        main_rating_val = rating  # 可能被主评分行设置（如 "4.8超棒"）
+        computed_rating = round(sum(sub_ratings.values()) / len(sub_ratings), 1) if len(sub_ratings) >= 2 else None
+        if main_rating_val and 0 < main_rating_val <= 5:
+            rating = main_rating_val
+        elif computed_rating:
+            rating = computed_rating
+        elif abnormal_score is not None:
+            rating = abnormal_score
+        else:
+            rating = 3.0
+
+        # 5. 跳过评分区前空行
         while j >= 0 and not lines[j].strip():
             j -= 1
 
-        # 房型
+        # 6. 房型（含"房"或"套"且不超过30字）
         room_type = ""
         if j >= 0:
             line = lines[j].strip()
-            if ('房' in line or '套' in line) and len(line) <= 30 and not re.search(r'(\d|分|点评|回复)', line):
-                room_type = line
-                j -= 1
+            if ('房' in line or '套' in line) and len(line) <= 30:
+                # 排除客人名误匹配：真正的房型不会是很短的词
+                if not re.match(r'^[\w*_]+$', line) or len(line) >= 4:
+                    room_type = line
+                    j -= 1
 
         # 跳过空行
         while j >= 0 and not lines[j].strip():
             j -= 1
 
-        # 入住年月
+        # 7. 入住年月
         travel_date = None
         if j >= 0:
             line = lines[j].strip()
@@ -334,35 +375,22 @@ class CtripAdapter(OTAAdapter):
         while j >= 0 and not lines[j].strip():
             j -= 1
 
-        # 客人名
+        # 8. 客人名（块最顶部的非空行）
         guest_name = ""
         if j >= 0:
             line = lines[j].strip()
-            if re.match(r'^[\w*_]+$', line) and len(line) >= 5:
+            # 过滤明显不是客人名的内容
+            is_metadata = any(k in line for k in [
+                '点评', '回复', '酒店', '携程', '筛选', '下载', '发表于',
+                '反馈', '不计入', '保护', '规则', '查看', '返现', '排序',
+                '首页', '订单', '房价', '商机', '帮助', '下载App',
+            ])
+            is_room_type = ('房' in line and '豪华' in line) or ('套' in line and '套房' in line) or ('居室' in line)
+            if not is_metadata and not is_room_type and len(line) <= 40:
                 guest_name = line
-            elif re.search(r'[一-鿿]', line) and len(line) <= 20:
-                if not any(k in line for k in ['点评', '回复', '酒店', '携程', '筛选', '下载', '发表于', '反馈', '不计入']):
-                    guest_name = line
-            elif re.match(r'^[\w*_-]+$', line):  # 其他用户名格式
-                guest_name = line
 
-        # 验证内容有效性
-        if not content or len(content) < 3:
-            return None
-        # 排除明显的误识别（酒店回复被当成点评）
-        if content.startswith('尊敬的') or '回复员工' in content:
-            return None
-        if len(content) > 2000:  # 太长的内容可能是多个块合并了
-            return None
-
-        # 检测携程后台是否已有酒店回复
-        has_hotel_reply = False
-        after_pub = text[text.find(lines[pub_line_idx]):] if pub_line_idx >= 0 else ''
-        if '酒店回复内容' in after_pub:
-            has_hotel_reply = True
-
-        # 用guest_name+日期+内容生成稳定ID，避免重复抓取
-        raw_id = str(hash(f"{guest_name}_{review_date.strftime('%Y%m%d')}_{content[:50]}"))
+        # 用 guest_name + 日期 + 内容前50字生成稳定 ID（hashlib 保证跨进程一致）
+        raw_id = hashlib.md5(f"{guest_name}_{review_date.strftime('%Y%m%d')}_{content[:50]}".encode()).hexdigest()
 
         return RawReview(
             platform_review_id=raw_id,
@@ -403,11 +431,16 @@ class CtripAdapter(OTAAdapter):
             return []
 
         reviews = []
-        prev_boundary = -1  # 上一个窗口结束位置，避免跨点评重叠
+        prev_boundary = -1  # 上一个"发表于:"位置，用于避免块重叠
 
         for pub_idx in pub_indices:
-            # 确保窗口不包含前一条点评的"发表于:"
-            start = max(prev_boundary + 1, pub_idx - 30)
+            # 跳过前一条点评的回复/补充区域
+            block_start = prev_boundary + 1
+            for skip_i in range(prev_boundary + 1, pub_idx):
+                line = lines[skip_i]
+                if '回复员工' in line or line.strip().startswith('补充点评'):
+                    block_start = skip_i + 1
+            start = max(block_start, pub_idx - 30)
             end = min(len(lines), pub_idx + 5)
             block = '\n'.join(lines[start:end])
 
@@ -421,29 +454,181 @@ class CtripAdapter(OTAAdapter):
         return reviews
 
     async def submit_reply(self, page: Page, review_id: str, reply_text: str) -> bool:
-        """提交回复"""
+        """提交单条回复（兼容旧接口，实际委托给批量方法）"""
+        return False  # 实际使用 submit_replies_batch
+
+    async def submit_replies_batch(self, page: Page, review_pairs: list) -> list:
+        """批量提交回复到携程后台
+
+        Args:
+            review_pairs: [{"guest_name": "...", "content": "...", "reply_text": "..."}, ...]
+
+        Returns:
+            [{"index": 0, "success": True}, {"index": 1, "success": False, "error": "..."}]
+        """
+        results = []
         try:
-            await page.goto("https://ebooking.ctrip.com/comment/commentList", wait_until="domcontentloaded")
-            await asyncio.sleep(2)
+            # 确保在点评列表页
+            current_url = page.url.lower()
+            if "comment" not in current_url or "ebooking" not in current_url:
+                await page.goto("https://ebooking.ctrip.com/comment/commentList",
+                                wait_until="domcontentloaded", timeout=30000)
+                await asyncio.sleep(3)
 
-            # 找到对应点评的回复框
-            for ta_sel in ["textarea#content", "textarea[name='content']", "textarea.reply-area",
-                           "textarea", "[class*='reply'] textarea"]:
+            # 点击"待回复"标签
+            tab_clicked = False
+            for tab_sel in ["text=待回复", "span:has-text('待回复')", "div:has-text('待回复')"]:
                 try:
-                    await page.fill(ta_sel, reply_text, timeout=3000)
-                    break
+                    el = await page.query_selector(tab_sel)
+                    if el:
+                        await el.click()
+                        await asyncio.sleep(2)
+                        tab_clicked = True
+                        break
                 except Exception:
                     continue
-            await asyncio.sleep(0.5)
 
-            for btn_sel in ["button:has-text('提交')", "button:has-text('回复')", ".submit-btn",
-                            "button.primary", "input[value='提交']"]:
+            if not tab_clicked:
+                return [{"index": i, "success": False, "error": "找不到待回复标签"} for i in range(len(review_pairs))]
+
+            # 等待页面渲染
+            await page.wait_for_selector("text=发表于:", timeout=10000)
+            await asyncio.sleep(1)
+
+            # 逐条处理
+            for idx, pair in enumerate(review_pairs):
                 try:
-                    await page.click(btn_sel, timeout=3000)
-                    await asyncio.sleep(2)
-                    return True
-                except Exception:
-                    continue
-            return False
+                    result = await self._submit_one_reply(page, pair)
+                    results.append({"index": idx, **result})
+                except Exception as e:
+                    results.append({"index": idx, "success": False, "error": str(e)[:200]})
+
+                # 避免触发反爬
+                if idx < len(review_pairs) - 1:
+                    await asyncio.sleep(1)
+
+            return results
+        except Exception as e:
+            return [{"index": i, "success": False, "error": str(e)[:200]} for i in range(len(review_pairs))]
+
+    async def _submit_one_reply(self, page: Page, pair: dict) -> dict:
+        """提交单条回复到携程
+
+        携程"待回复"页面的实际UI结构（React SPA + Trip.com UI kit）：
+        - 每条点评卡片里直接嵌入了 textarea（不是弹窗模式）
+        - 在 textarea 中输入文本后，"发表回复"和"取消"按钮才会动态出现
+        - 点击"发表回复"提交，成功消息："更改后的点评将在24小时内更新到前端网站"
+        """
+        guest_name = pair.get("guest_name", "")
+        content = pair.get("content", "")
+        reply_text = pair.get("reply_text", "")
+
+        if not reply_text:
+            return {"success": False, "error": "回复内容为空"}
+
+        # 1. 通过JS在匹配的点评卡片上标记 data-auto-submit 属性
+        marked = await page.evaluate("""
+            ({guestName, contentSnippet}) => {
+                const cards = document.querySelectorAll('[class*="ct61sa9"]');
+                for (let i = 0; i < cards.length; i++) {
+                    const text = cards[i].textContent || '';
+                    let score = 0;
+                    if (guestName && text.includes(guestName)) score += 10;
+                    if (contentSnippet && text.includes(contentSnippet)) score += 15;
+                    if (text.includes('酒店回复内容')) score -= 100;
+                    if (score >= 15) {
+                        cards[i].setAttribute('data-auto-submit', 'true');
+                        return true;
+                    }
+                }
+                return false;
+            }
+        """, {"guestName": guest_name, "contentSnippet": (content or "")[:40]})
+
+        if not marked:
+            return {"success": False, "error": "找不到匹配的点评卡片"}
+
+        # 2. 获取该卡片内的 textarea
+        card = page.locator('[data-auto-submit="true"]')
+        ta = card.locator('textarea').first
+        try:
+            await ta.scroll_into_view_if_needed(timeout=3000)
+            await asyncio.sleep(0.3)
         except Exception:
-            return False
+            pass
+
+        # 3. 输入回复文本（触发React onChange，动态显示"发表回复"按钮）
+        await ta.click()
+        await asyncio.sleep(0.2)
+        await ta.fill("")  # 清除可能已有的草稿
+        await ta.fill(reply_text)
+        await asyncio.sleep(0.8)
+
+        # 4. 点击"发表回复"按钮（输入文本后才出现）
+        submit_btn = card.locator('button:has-text("发表回复")')
+        try:
+            await submit_btn.wait_for(state="visible", timeout=5000)
+        except Exception:
+            # 清除标记
+            await page.evaluate("""
+                () => { const el = document.querySelector('[data-auto-submit="true"]');
+                        if (el) el.removeAttribute('data-auto-submit'); }
+            """)
+            return {"success": False, "error": "发表回复按钮未出现"}
+
+        await submit_btn.click()
+        await asyncio.sleep(2)
+
+        # 5. 验证提交结果
+        result = await page.evaluate("""
+            () => {
+                const msgs = document.querySelectorAll('[class*="message"]');
+                for (const m of msgs) {
+                    if (m.offsetHeight > 0) {
+                        const text = m.textContent || '';
+                        if (text.includes('24小时') || text.includes('成功')) return {ok: true, msg: text.substring(0, 80)};
+                        if (text.includes('失败') || text.includes('错误')) return {ok: false, msg: text.substring(0, 80)};
+                    }
+                }
+                return {ok: true, msg: '已提交（无错误提示）'};
+            }
+        """)
+
+        # 清除标记
+        await page.evaluate("""
+            () => { const el = document.querySelector('[data-auto-submit="true"]');
+                    if (el) el.removeAttribute('data-auto-submit'); }
+        """)
+
+        if result.get("ok"):
+            return {"success": True}
+        return {"success": False, "error": result.get("msg", "未知提交结果")}
+
+    async def _close_any_modal(self, page: Page):
+        """关闭页面上可能残留的模态框"""
+        try:
+            # 尝试点遮罩层
+            mask = page.locator('[class*="modal-mask"], [class*="Modal"] [class*="mask"]').first
+            if await mask.is_visible(timeout=1000):
+                await mask.click(timeout=2000)
+                await asyncio.sleep(0.5)
+                return
+        except Exception:
+            pass
+
+        try:
+            # 尝试点关闭按钮
+            close_btn = page.locator('[class*="modal"] [class*="close"], [class*="Modal"] button[class*="close"], [aria-label="Close"], [aria-label="关闭"]').first
+            if await close_btn.is_visible(timeout=1000):
+                await close_btn.click(timeout=2000)
+                await asyncio.sleep(0.5)
+                return
+        except Exception:
+            pass
+
+        try:
+            # 按 Escape 键关闭
+            await page.keyboard.press("Escape")
+            await asyncio.sleep(0.5)
+        except Exception:
+            pass

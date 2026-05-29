@@ -64,8 +64,8 @@ export const reviewAPI = {
   generate: (hotelId: string, reviewId: string) => api.post(`/api/v1/hotels/${hotelId}/reviews/${reviewId}/generate`),
   updateReply: (hotelId: string, reviewId: string, data: any) => api.put(`/api/v1/hotels/${hotelId}/reviews/${reviewId}/reply`, data),
   submit: (hotelId: string, reviewId: string) => api.post(`/api/v1/hotels/${hotelId}/reviews/${reviewId}/submit`),
-  batchGenerate: (hotelId: string) => api.post(`/api/v1/hotels/${hotelId}/reviews/batch-generate`),
-  batchSubmit: (hotelId: string) => api.post(`/api/v1/hotels/${hotelId}/reviews/batch-submit`),
+  batchGenerate: (hotelId: string) => api.post(`/api/v1/hotels/${hotelId}/reviews/batch-generate`, null, { timeout: 180000 }),
+  batchSubmit: (hotelId: string) => api.post(`/api/v1/hotels/${hotelId}/reviews/batch-submit`, null, { timeout: 60000 }),
 }
 
 export const taskAPI = {
@@ -73,6 +73,11 @@ export const taskAPI = {
   get: (taskId: string) => api.get(`/api/v1/tasks/${taskId}`),
   list: (hotelId?: string) => api.get('/api/v1/tasks', { params: hotelId ? { hotel_id: hotelId } : {} }),
   demoReviews: (hotelId: string, count: number = 8) => api.post(`/api/v1/hotels/${hotelId}/demo-reviews`, null, { params: { count } }),
+}
+
+export const submitTaskAPI = {
+  get: (taskId: string) => api.get(`/api/v1/submit-tasks/${taskId}`),
+  list: (hotelId: string) => api.get(`/api/v1/hotels/${hotelId}/submit-tasks`),
 }
 
 export const dashboardAPI = {

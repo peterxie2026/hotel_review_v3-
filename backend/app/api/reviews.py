@@ -1,3 +1,7 @@
+import asyncio
+import logging
+import uuid
+from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from app.database import get_db
@@ -5,8 +9,10 @@ from app.schemas import (
     ReviewResponse, ReviewListResponse, ReplyResponse, ReplyUpdateRequest, UserInfo,
 )
 from app.api.auth import get_current_user
-from app.models import Hotel, Review, Reply, ReplyStatus, ReviewStatus
+from app.models import Hotel, Review, Reply, ReplyStatus, ReviewStatus, SubmitTask, TaskStatus
 from app.services.ai_service import generate_reply
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/hotels/{hotel_id}/reviews", tags=["点评管理"])
 
@@ -183,8 +189,8 @@ def update_reply(hotel_id: str, review_id: str, data: ReplyUpdateRequest,
     )
 
 
-@router.post("/{review_id}/submit", response_model=ReplyResponse)
-def submit_reply(hotel_id: str, review_id: str,
+@router.post("/{review_id}/submit")
+async def submit_reply(hotel_id: str, review_id: str,
                  current_user: UserInfo = Depends(get_current_user), db: Session = Depends(get_db)):
     _get_hotel(hotel_id, current_user.id, db)
     review = db.query(Review).filter(Review.id == review_id, Review.hotel_id == hotel_id).first()
@@ -196,18 +202,45 @@ def submit_reply(hotel_id: str, review_id: str,
         raise HTTPException(status_code=404, detail="未生成回复")
 
     reply.final_text = reply.edited_text or reply.ai_text
-    reply.status = ReplyStatus.submitted
-    reply.submitted_at = __import__("datetime").datetime.utcnow()
-    review.status = ReviewStatus.replied
-
-    # 使用模板则增加计数
     db.commit()
-    db.refresh(reply)
-    return ReplyResponse(
-        id=reply.id, review_id=reply.review_id, ai_model=reply.ai_model,
-        ai_text=reply.ai_text, edited_text=reply.edited_text, final_text=reply.final_text,
-        status=reply.status.value, submitted_at=reply.submitted_at, created_at=reply.created_at,
+
+    # 演示数据直接标记为已提交
+    if review.platform_review_id and review.platform_review_id.startswith("demo_"):
+        reply.status = ReplyStatus.submitted
+        reply.submitted_at = datetime.utcnow()
+        review.status = ReviewStatus.replied
+        db.commit()
+        db.refresh(reply)
+        return ReplyResponse(
+            id=reply.id, review_id=reply.review_id, ai_model=reply.ai_model,
+            ai_text=reply.ai_text, edited_text=reply.edited_text, final_text=reply.final_text,
+            status=reply.status.value, submitted_at=reply.submitted_at, created_at=reply.created_at,
+        )
+
+    # 真实数据：创建提交任务
+    from app.api.tasks import _running_submit_tasks, _run_submit
+
+    task = SubmitTask(
+        id=str(uuid.uuid4()),
+        hotel_id=hotel_id,
+        platform=review.platform.value if review.platform else "ctrip",
+        status=TaskStatus.pending,
+        total_count=1,
     )
+    db.add(task)
+    db.commit()
+    db.refresh(task)
+
+    pair = {
+        "review_id": review.id,
+        "reply_id": reply.id,
+        "reply_text": reply.final_text,
+        "guest_name": review.guest_name or "",
+        "content": review.content or "",
+    }
+    _running_submit_tasks[task.id] = asyncio.create_task(_run_submit(task.id, hotel_id, [pair]))
+
+    return {"task_id": task.id, "status": "pending", "message": "提交任务已启动"}
 
 
 @router.post("/batch-generate")
@@ -218,53 +251,122 @@ async def batch_generate(hotel_id: str, current_user: UserInfo = Depends(get_cur
         Review.status == ReviewStatus.pending_reply,
     ).all()
 
-    results = []
-    for review in pending_reviews:
-        knowledge_texts = [f"{e.key}: {e.value}" for e in sorted(hotel.knowledge_entries, key=lambda e: e.priority, reverse=True)]
-        knowledge_text = "\n".join(knowledge_texts) if knowledge_texts else hotel.name
-        template_texts = [f"[{t.category.value}] {t.name}: {t.text}" for t in hotel.reply_templates if t.is_active]
-        template_text = "\n".join(template_texts) if template_texts else "暂无"
+    if not pending_reviews:
+        return {"generated": 0, "details": []}
 
+    # 预计算共用数据（避免并发访问 ORM 关系）
+    knowledge_texts = [f"{e.key}: {e.value}" for e in sorted(hotel.knowledge_entries, key=lambda e: e.priority, reverse=True)]
+    knowledge_text = "\n".join(knowledge_texts) if knowledge_texts else hotel.name
+    template_texts = [f"[{t.category.value}] {t.name}: {t.text}" for t in hotel.reply_templates if t.is_active]
+    template_text = "\n".join(template_texts) if template_texts else "暂无"
+
+    hotel_name = hotel.name
+    reply_tone = hotel.reply_tone or "亲切温暖专业"
+    ai_provider = hotel.ai_provider or "deepseek"
+    ai_model = hotel.ai_model or ""
+
+    # 预计算回退模板
+    fallback_map = {}
+    for cat_val, cat_name in [("positive", "positive"), ("negative", "negative"), ("neutral", "neutral")]:
+        t = next((t for t in hotel.reply_templates if t.category.value == cat_val and t.is_active), None)
+        fallback_map[cat_name] = t.text if t else None
+
+    async def generate_one(review):
         try:
             ai_text = await generate_reply(
                 review_content=review.content or "",
                 rating=review.rating or 3.0,
-                hotel_name=hotel.name,
-                reply_tone=hotel.reply_tone or "亲切温暖专业",
+                hotel_name=hotel_name,
+                reply_tone=reply_tone,
                 knowledge_text=knowledge_text,
                 template_text=template_text,
-                provider=hotel.ai_provider or "deepseek",
-                model=hotel.ai_model or "",
+                provider=ai_provider,
+                model=ai_model,
             )
-        except Exception:
+            return review, ai_text, None
+        except Exception as e:
+            logger.warning(f"AI生成失败 review={review.id}: {e}")
             category = "positive" if (review.rating or 5) >= 4 else "negative" if (review.rating or 5) < 3 else "neutral"
-            fallback = next((t for t in hotel.reply_templates if t.category.value == category and t.is_active), None)
-            ai_text = fallback.text if fallback else f"尊敬的宾客，感谢您的点评。欢迎再次光临{hotel.name}！"
+            fallback_text = fallback_map.get(category)
+            ai_text = fallback_text or f"尊敬的宾客，感谢您的点评。欢迎再次光临{hotel_name}！"
+            return review, ai_text, str(e)
 
+    # 并发调用 AI（不涉及 DB，协程安全）
+    gen_results = await asyncio.gather(*[generate_one(r) for r in pending_reviews])
+
+    results = []
+    for review, ai_text, error in gen_results:
         reply = Reply(review_id=review.id, ai_model="deepseek-chat", ai_text=ai_text, status=ReplyStatus.approved)
         db.add(reply)
-        results.append({"review_id": review.id, "status": "generated"})
+        results.append({"review_id": review.id, "status": "generated", "error": error})
 
     db.commit()
     return {"generated": len(results), "details": results}
 
 
 @router.post("/batch-submit")
-def batch_submit(hotel_id: str, current_user: UserInfo = Depends(get_current_user), db: Session = Depends(get_db)):
+async def batch_submit(hotel_id: str, current_user: UserInfo = Depends(get_current_user), db: Session = Depends(get_db)):
     _get_hotel(hotel_id, current_user.id, db)
     approved_replies = db.query(Reply).join(Review).filter(
         Review.hotel_id == hotel_id,
         Reply.status == ReplyStatus.approved,
     ).all()
 
-    count = 0
-    now = __import__("datetime").datetime.utcnow()
+    if not approved_replies:
+        raise HTTPException(status_code=400, detail="没有待提交的回复")
+
+    # 构建提交对
+    demo_pairs = []
+    real_pairs = []
     for reply in approved_replies:
         reply.final_text = reply.edited_text or reply.ai_text
-        reply.status = ReplyStatus.submitted
-        reply.submitted_at = now
-        reply.review.status = ReviewStatus.replied
-        count += 1
+        review = reply.review
+        pair = {
+            "review_id": review.id,
+            "reply_id": reply.id,
+            "reply_text": reply.final_text,
+            "guest_name": review.guest_name or "",
+            "content": review.content or "",
+        }
+        if review.platform_review_id and review.platform_review_id.startswith("demo_"):
+            demo_pairs.append(pair)
+        else:
+            real_pairs.append(pair)
 
+    # 演示数据直接标记
+    now = datetime.utcnow()
+    for p in demo_pairs:
+        rp = db.query(Reply).filter(Reply.id == p["reply_id"]).first()
+        if rp:
+            rp.status = ReplyStatus.submitted
+            rp.submitted_at = now
+            rp.review.status = ReviewStatus.replied
     db.commit()
-    return {"submitted": count}
+
+    if not real_pairs:
+        return {"submitted": len(demo_pairs), "mode": "demo_only"}
+
+    # 检查运行中的任务
+    from app.api.tasks import _running_submit_tasks, _run_submit
+    running = db.query(SubmitTask).filter(
+        SubmitTask.hotel_id == hotel_id,
+        SubmitTask.status == TaskStatus.running,
+    ).first()
+    if running:
+        raise HTTPException(status_code=400, detail="已有正在执行的提交任务")
+
+    task = SubmitTask(
+        id=str(uuid.uuid4()),
+        hotel_id=hotel_id,
+        platform="ctrip",
+        status=TaskStatus.pending,
+        total_count=len(real_pairs) + len(demo_pairs),
+        success_count=len(demo_pairs),
+    )
+    db.add(task)
+    db.commit()
+    db.refresh(task)
+
+    _running_submit_tasks[task.id] = asyncio.create_task(_run_submit(task.id, hotel_id, real_pairs))
+
+    return {"task_id": task.id, "status": "pending", "total": len(real_pairs), "message": "提交任务已启动"}

@@ -252,6 +252,7 @@ class HotelReport(BaseModel):
     platform_distribution: dict  # {"ctrip": count, ...}
     monthly_trends: list  # [{month: "2026-05", count: 10, replied: 8}, ...]
     recent_reviews: list  # 最近5条点评摘要
+    review_summary: Optional[dict] = None  # 点评汇总：好评/差评主题排行
 
 
 # ===== Dashboard =====
@@ -261,3 +262,23 @@ class DashboardSummary(BaseModel):
     pending_reviews: int
     replied_today: int
     reply_rate: float  # 0-100
+
+
+# ===== SubmitTask =====
+class SubmitTaskResponse(BaseModel):
+    id: str
+    hotel_id: str
+    platform: str
+    status: str
+    total_count: int = 0
+    success_count: int = 0
+    failed_count: int = 0
+    results_json: Optional[str] = None
+    error_message: Optional[str] = None
+    progress_message: Optional[str] = None
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    created_at: datetime
+
+    class Config:
+        from_attributes = True

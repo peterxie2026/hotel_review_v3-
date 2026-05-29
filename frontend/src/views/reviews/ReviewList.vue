@@ -35,6 +35,24 @@
       </template>
     </el-alert>
 
+    <!-- 提交进度条 -->
+    <el-alert v-if="activeSubmitTask" :title="submitTaskTitle" :type="submitTaskType" show-icon :closable="false" style="margin-bottom:16px;">
+      <template #default>
+        <div style="display:flex;align-items:center;gap:12px;margin-top:4px;">
+          <el-progress v-if="activeSubmitTask.status === 'running'"
+            :percentage="Math.round((activeSubmitTask.success_count || 0) / (activeSubmitTask.total_count || 1) * 100)"
+            style="flex:1;" />
+          <el-progress v-else :percentage="activeSubmitTask.status === 'completed' ? 100 : 0"
+            :status="activeSubmitTask.status === 'completed' ? 'success' : 'exception'" style="flex:1;" />
+          <span style="font-size:13px;color:#606266;">{{ activeSubmitTask.progress_message || submitStatusText(activeSubmitTask.status) }}
+            ({{ activeSubmitTask.success_count || 0 }}/{{ activeSubmitTask.total_count || 0 }})
+          </span>
+          <el-button v-if="activeSubmitTask.status !== 'running'" size="small" text type="primary"
+            @click="activeSubmitTask = null; loadReviews()">关闭并刷新</el-button>
+        </div>
+      </template>
+    </el-alert>
+
     <!-- 数据统计 -->
     <el-card style="margin-bottom:16px;border-radius:12px;" shadow="never">
       <div style="display:flex;align-items:center;gap:24px;flex-wrap:wrap;">
@@ -188,7 +206,7 @@ import { ref, onMounted, onBeforeUnmount, computed } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Refresh, Download, MagicStick, Select, Edit, DataAnalysis } from '@element-plus/icons-vue'
-import { reviewAPI, taskAPI } from '../../api'
+import { reviewAPI, taskAPI, submitTaskAPI } from '../../api'
 
 const route = useRoute()
 const hotelId = route.params.hotelId as string
@@ -208,8 +226,10 @@ const currentReply = ref<any>(null)
 const editedText = ref('')
 const savingReply = ref(false)
 const activeTask = ref<any>(null)
+const activeSubmitTask = ref<any>(null)
 const lastScrapeTime = ref('')
 let pollTimer: any = null
+let submitPollTimer: any = null
 
 const pendingTotal = ref(0)
 const approvedTotal = ref(0)
@@ -223,6 +243,8 @@ const confirmDialogLoading = ref(false)
 const hasActiveFilters = computed(() => filters.value.status || filters.value.platform || filters.value.rating_min)
 const taskTitle = computed(() => activeTask.value?.status === 'running' ? '抓取进行中' : activeTask.value?.status === 'completed' ? '抓取完成' : '抓取失败')
 const taskType = computed(() => activeTask.value?.status === 'running' ? 'info' : activeTask.value?.status === 'completed' ? 'success' : 'error')
+const submitTaskTitle = computed(() => activeSubmitTask.value?.status === 'running' ? 'OTA提交进行中' : activeSubmitTask.value?.status === 'completed' ? 'OTA提交完成' : 'OTA提交失败')
+const submitTaskType = computed(() => activeSubmitTask.value?.status === 'running' ? 'info' : activeSubmitTask.value?.status === 'completed' ? 'success' : 'error')
 
 async function loadReviews() {
   page.value = 1
@@ -301,8 +323,41 @@ onMounted(async () => {
   await loadReviews()
   await loadLastScrapeTime()
   await checkActiveTasks()
+  await checkActiveSubmitTasks()
 })
-onBeforeUnmount(stopPolling)
+function startSubmitPolling(taskId: string) {
+  stopSubmitPolling()
+  submitPollTimer = setInterval(async () => {
+    try {
+      const res = await submitTaskAPI.get(taskId)
+      activeSubmitTask.value = res.data
+      if (res.data.status === 'completed' || res.data.status === 'failed') {
+        stopSubmitPolling()
+        await loadReviews()
+        await loadLastScrapeTime()
+      }
+    } catch { stopSubmitPolling() }
+  }, 2000)
+}
+
+function stopSubmitPolling() {
+  if (submitPollTimer) { clearInterval(submitPollTimer); submitPollTimer = null }
+}
+
+async function checkActiveSubmitTasks() {
+  try {
+    const res = await submitTaskAPI.list(hotelId)
+    if (res.data.length > 0) {
+      const running = res.data.find((t: any) => t.status === 'pending' || t.status === 'running')
+      if (running) {
+        activeSubmitTask.value = running
+        startSubmitPolling(running.id)
+      }
+    }
+  } catch {}
+}
+
+onBeforeUnmount(() => { stopPolling(); stopSubmitPolling() })
 
 function onFilterChange() { loadReviews() }
 
@@ -314,6 +369,7 @@ function clearFilters() {
 function statusType(s: string) { return { pending_reply: 'warning', replied: 'success', ignored: 'info' }[s] || '' }
 function statusText(s: string) { return { pending_reply: '待回复', replied: '已回复', ignored: '已忽略' }[s] || s }
 function statusText2(s: string) { return { pending: '排队中', running: '执行中', completed: '已完成', failed: '失败' }[s] || s }
+function submitStatusText(s: string) { return { pending: '排队中', running: '提交中', completed: '已完成', failed: '失败' }[s] || s }
 function platformLabel(p: string) { return { ctrip: '携程', meituan: '美团', fliggy: '飞猪' }[p] || p }
 function formatDate(d: string) { return d ? new Date(d).toLocaleDateString('zh-CN') : '' }
 function formatTime(d: string) {
@@ -364,9 +420,15 @@ async function saveReply() {
 async function submitReply(r: any) {
   r._submitting = true
   try {
-    await reviewAPI.submit(hotelId, r.id)
-    ElMessage.success('已提交到OTA平台')
-    await loadReviews()
+    const res = await reviewAPI.submit(hotelId, r.id)
+    if (res.data.task_id) {
+      activeSubmitTask.value = { id: res.data.task_id, status: 'pending', total_count: 1, success_count: 0 }
+      startSubmitPolling(res.data.task_id)
+      ElMessage.success('提交任务已启动')
+    } else {
+      ElMessage.success('已提交到OTA平台')
+      await loadReviews()
+    }
   } catch (e: any) { ElMessage.error(e.response?.data?.detail || '提交失败') }
   r._submitting = false
 }
@@ -394,7 +456,13 @@ async function executeConfirmedAction() {
       ElMessage.success(`已成功为 ${res.data.generated} 条点评生成AI回复，可以直接提交到OTA`)
     } else if (confirmDialogType.value === 'submit') {
       const res = await reviewAPI.batchSubmit(hotelId)
-      ElMessage.success(`已成功提交 ${res.data.submitted} 条回复到OTA平台`)
+      if (res.data.task_id) {
+        activeSubmitTask.value = { id: res.data.task_id, status: 'pending', total_count: res.data.total, success_count: 0 }
+        startSubmitPolling(res.data.task_id)
+        ElMessage.success(res.data.message || '提交任务已启动')
+      } else if (res.data.mode === 'demo_only') {
+        ElMessage.success(`已提交 ${res.data.submitted} 条回复`)
+      }
     }
     confirmDialogVisible.value = false
     await loadReviews()

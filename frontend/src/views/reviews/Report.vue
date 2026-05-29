@@ -2,7 +2,23 @@
   <div>
     <el-page-header @back="$router.push(`/hotels/${hotelId}/reviews`)" :content="'点评报告'" />
     <div v-loading="loading" style="margin-top:16px;">
-      <h3 style="margin-bottom:16px;">{{ report?.hotel_name }} · 点评数据分析</h3>
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+        <h3 style="margin:0;">{{ report?.hotel_name }} · 点评数据分析</h3>
+        <div style="display:flex;align-items:center;gap:8px;">
+          <el-date-picker
+            v-model="dateRange"
+            type="daterange"
+            range-separator="至"
+            start-placeholder="开始日期"
+            end-placeholder="结束日期"
+            value-format="YYYY-MM-DD"
+            :shortcuts="dateShortcuts"
+            size="small"
+            style="width:280px;"
+          />
+          <el-button type="primary" size="small" @click="fetchReport">查询</el-button>
+        </div>
+      </div>
 
       <!-- 概览卡片 -->
       <el-row :gutter="16">
@@ -11,6 +27,71 @@
             <div class="rpt-value">{{ card.value }}</div>
             <div class="rpt-label">{{ card.label }}</div>
           </div>
+        </el-col>
+      </el-row>
+
+      <!-- 点评汇总 -->
+      <el-card v-if="report?.review_summary" style="margin-top:16px;border-radius:12px;">
+        <template #header>
+          <div style="display:flex;justify-content:space-between;align-items:center;">
+            <span style="font-weight:600;">点评汇总</span>
+            <span style="font-size:12px;color:#909399;">
+              {{ report.review_summary.date_from }} ~ {{ report.review_summary.date_to }}
+              · 共 {{ report.review_summary.filtered_count }} 条
+            </span>
+          </div>
+        </template>
+        <el-row :gutter="16">
+          <el-col :span="8" style="text-align:center;padding:16px 0;">
+            <div style="font-size:24px;font-weight:700;color:#52c41a;">{{ report.review_summary.positive_count }}</div>
+            <div style="font-size:12px;color:#909399;">好评 ({{ report.review_summary.positive_rate }}%)</div>
+          </el-col>
+          <el-col :span="8" style="text-align:center;padding:16px 0;border-left:1px solid #f0f2f5;border-right:1px solid #f0f2f5;">
+            <div style="font-size:24px;font-weight:700;color:#909399;">{{ report.review_summary.neutral_count }}</div>
+            <div style="font-size:12px;color:#909399;">中评</div>
+          </el-col>
+          <el-col :span="8" style="text-align:center;padding:16px 0;">
+            <div style="font-size:24px;font-weight:700;color:#f5222d;">{{ report.review_summary.negative_count }}</div>
+            <div style="font-size:12px;color:#909399;">差评 ({{ report.review_summary.negative_rate }}%)</div>
+          </el-col>
+        </el-row>
+      </el-card>
+
+      <!-- 主题排行 -->
+      <el-row :gutter="16" style="margin-top:16px;">
+        <el-col :span="12">
+          <el-card header="好评主题排行" style="border-radius:12px;">
+            <el-empty v-if="!report?.review_summary?.positive_themes?.length" description="暂无好评主题数据" />
+            <div v-else style="padding:8px 0;">
+              <div v-for="(t, i) in report.review_summary.positive_themes" :key="t.theme" style="display:flex;align-items:center;margin-bottom:12px;">
+                <span style="width:24px;font-size:16px;font-weight:700;color:#faad14;">{{ i + 1 }}</span>
+                <span style="width:80px;font-size:13px;color:#303133;">{{ t.theme }}</span>
+                <div style="flex:1;margin:0 12px;">
+                  <div style="height:22px;background:#f6ffed;border-radius:11px;overflow:hidden;">
+                    <div :style="{width:getThemePercent(t.count, report.review_summary.positive_themes)+'%',background:posThemeColors[i]||'#52c41a',height:'100%',borderRadius:'11px',transition:'width .5s'}" />
+                  </div>
+                </div>
+                <span style="width:36px;font-size:13px;color:#52c41a;text-align:right;font-weight:600;">{{ t.count }}</span>
+              </div>
+            </div>
+          </el-card>
+        </el-col>
+        <el-col :span="12">
+          <el-card header="差评舆论点排行" style="border-radius:12px;">
+            <el-empty v-if="!report?.review_summary?.negative_themes?.length" description="暂无差评主题数据" />
+            <div v-else style="padding:8px 0;">
+              <div v-for="(t, i) in report.review_summary.negative_themes" :key="t.theme" style="display:flex;align-items:center;margin-bottom:12px;">
+                <span style="width:24px;font-size:16px;font-weight:700;color:#f5222d;">{{ i + 1 }}</span>
+                <span style="width:80px;font-size:13px;color:#303133;">{{ t.theme }}</span>
+                <div style="flex:1;margin:0 12px;">
+                  <div style="height:22px;background:#fff2f0;border-radius:11px;overflow:hidden;">
+                    <div :style="{width:getThemePercent(t.count, report.review_summary.negative_themes)+'%',background:negThemeColors[i]||'#f5222d',height:'100%',borderRadius:'11px',transition:'width .5s'}" />
+                  </div>
+                </div>
+                <span style="width:36px;font-size:13px;color:#f5222d;text-align:right;font-weight:600;">{{ t.count }}</span>
+              </div>
+            </div>
+          </el-card>
         </el-col>
       </el-row>
 
@@ -94,8 +175,25 @@ const route = useRoute()
 const hotelId = route.params.hotelId as string
 const report = ref<any>(null)
 const loading = ref(false)
+function getDefaultDateRange(): [string, string] {
+  const end = new Date()
+  const start = new Date()
+  start.setDate(start.getDate() - 30)
+  return [start.toISOString().slice(0, 10), end.toISOString().slice(0, 10)]
+}
+const dateRange = ref<[string, string] | null>(getDefaultDateRange())
 
 const starColors = ['#f5222d', '#fa8c16', '#fadb14', '#a0d911', '#52c41a']
+const posThemeColors = ['#52c41a', '#73d13d', '#95de64', '#b7eb8f', '#d9f7be']
+const negThemeColors = ['#f5222d', '#ff4d4f', '#ff7875', '#ffa39e', '#ffccc7']
+
+const dateShortcuts = [
+  { text: '最近7天', value: () => { const e = new Date(); const s = new Date(); s.setDate(s.getDate()-7); return [s, e] } },
+  { text: '最近30天', value: () => { const e = new Date(); const s = new Date(); s.setDate(s.getDate()-30); return [s, e] } },
+  { text: '最近90天', value: () => { const e = new Date(); const s = new Date(); s.setDate(s.getDate()-90); return [s, e] } },
+  { text: '最近180天', value: () => { const e = new Date(); const s = new Date(); s.setDate(s.getDate()-180); return [s, e] } },
+]
+
 const platforms = [
   { key: 'ctrip', label: '携程', color: '#6B7FD7' },
   { key: 'meituan', label: '美团', color: '#f5a623' },
@@ -119,6 +217,11 @@ function getPlatformPercent(key: string) {
   return Math.round((report.value.platform_distribution[key] || 0) / max * 100)
 }
 
+function getThemePercent(count: number, themes: any[]) {
+  const max = Math.max(...themes.map((t: any) => t.count), 1)
+  return Math.round(count / max * 100)
+}
+
 const cards = computed(() => [
   { label: '总点评数', value: report.value?.total_reviews ?? 0, color: '#6B7FD7' },
   { label: '待回复', value: report.value?.pending_reviews ?? 0, color: '#faad14' },
@@ -126,11 +229,21 @@ const cards = computed(() => [
   { label: '平均评分', value: report.value?.avg_rating ?? 0, color: '#1890ff' },
 ])
 
-onMounted(async () => {
+async function fetchReport() {
   loading.value = true
-  try { const res = await api.get(`/api/v1/hotels/${hotelId}/report`); report.value = res.data } catch {}
+  try {
+    const params: any = {}
+    if (dateRange.value && dateRange.value.length === 2) {
+      params.date_from = dateRange.value[0]
+      params.date_to = dateRange.value[1]
+    }
+    const res = await api.get(`/api/v1/hotels/${hotelId}/report`, { params })
+    report.value = res.data
+  } catch {}
   loading.value = false
-})
+}
+
+onMounted(() => { fetchReport() })
 </script>
 
 <style scoped>
