@@ -4,7 +4,7 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from sqlalchemy.orm import Session
 from app.database import get_db
-from app.schemas import ScrapeTaskResponse, SubmitTaskResponse, UserInfo
+from app.schemas import ScrapeTaskResponse, SubmitTaskResponse, UserInfo, HotelResponse
 from app.api.auth import get_current_user
 from app.models import Hotel, OTAAccount, ScrapeTask, SubmitTask, TaskStatus, Review, ReviewStatus, Reply, ReplyStatus
 from app.services.crypto_service import decrypt_password
@@ -285,6 +285,70 @@ def generate_demo_reviews(hotel_id: str, count: int = 8,
     db.commit()
     db.refresh(task)
     return ScrapeTaskResponse.model_validate(task)
+
+
+@router.post("/demo/setup", response_model=HotelResponse)
+def demo_setup(current_user: UserInfo = Depends(get_current_user), db: Session = Depends(get_db)):
+    """一键体验：创建演示酒店并生成演示点评数据"""
+    demo_hotel = Hotel(
+        id=str(uuid.uuid4()),
+        user_id=current_user.id,
+        name="阆中明宇豪雅度假酒店（演示）",
+        brand="明宇商旅",
+        address="四川省阆中市阆水中路33号",
+        phone="0817-6288888",
+        star_rating=5,
+        highlights=["嘉陵江景", "阆中古城旁", "川菜美食", "亲子友好"],
+        reply_tone="亲切温暖专业",
+        ai_provider="deepseek",
+    )
+    db.add(demo_hotel)
+    db.flush()
+
+    # 生成演示点评
+    from datetime import timedelta
+    new_count = 0
+    for i, demo in enumerate(DEMO_REVIEWS):
+        existing = db.query(Review).filter(
+            Review.hotel_id == demo_hotel.id,
+            Review.platform == "ctrip",
+            Review.platform_review_id == f"demo_{demo_hotel.id[:8]}_{i}",
+        ).first()
+        if not existing:
+            review = Review(
+                hotel_id=demo_hotel.id,
+                platform="ctrip",
+                platform_review_id=f"demo_{demo_hotel.id[:8]}_{i}",
+                guest_name=demo["guest_name"],
+                rating=demo["rating"],
+                content=demo["content"],
+                check_in_date=datetime.utcnow() - timedelta(days=random.randint(1, 30)),
+                review_date=datetime.utcnow() - timedelta(days=random.randint(0, 7)),
+                status=ReviewStatus.pending_reply,
+            )
+            db.add(review)
+            new_count += 1
+
+    db.commit()
+    db.refresh(demo_hotel)
+    return HotelResponse(
+        id=demo_hotel.id,
+        name=demo_hotel.name,
+        brand=demo_hotel.brand,
+        address=demo_hotel.address,
+        phone=demo_hotel.phone,
+        star_rating=demo_hotel.star_rating,
+        room_count=demo_hotel.room_count,
+        highlights=demo_hotel.highlights or [],
+        reply_tone=demo_hotel.reply_tone,
+        ai_provider=demo_hotel.ai_provider or "deepseek",
+        ai_model=demo_hotel.ai_model or "",
+        is_active=demo_hotel.is_active,
+        schedule_config=demo_hotel.schedule_config,
+        ota_count=0,
+        pending_review_count=new_count,
+        created_at=demo_hotel.created_at,
+    )
 
 
 # ===== OTA回复提交任务 =====

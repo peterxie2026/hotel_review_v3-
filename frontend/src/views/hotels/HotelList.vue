@@ -18,9 +18,20 @@
               </div>
             </div>
           </div>
+          <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;" @click.stop>
+            <el-button v-if="h.pending_review_count === 0 && h.ota_count === 0" size="small" type="success" :icon="MagicStick" :loading="h._demoLoading" @click="genDemo(h)">
+              生成演示数据
+            </el-button>
+            <el-button size="small" :icon="Setting" @click="$router.push('/hotels/'+h.id+'/accounts')">OTA账号</el-button>
+            <el-button size="small" :icon="Edit" @click="$router.push('/hotels/'+h.id)">设置</el-button>
+          </div>
         </el-card>
       </el-col>
     </el-row>
+
+    <el-empty v-if="!loading && hotels.length === 0" description="还没有添加酒店，请先添加酒店">
+      <el-button type="primary" :icon="Plus" @click="showCreate">添加酒店</el-button>
+    </el-empty>
 
     <el-dialog v-model="dialogVisible" title="添加酒店" width="500px">
       <el-form :model="form" :rules="rules" ref="formRef" label-width="80px">
@@ -42,17 +53,21 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
-import { Plus } from '@element-plus/icons-vue'
-import { hotelAPI } from '../../api'
+import { Plus, MagicStick, Setting, Edit } from '@element-plus/icons-vue'
+import { hotelAPI, taskAPI } from '../../api'
 
 const hotels = ref<any[]>([])
+const loading = ref(true)
 const dialogVisible = ref(false)
 const saving = ref(false)
 const formRef = ref()
 const form = ref({ name: '', brand: '', address: '', phone: '', star_rating: 4, reply_tone: '亲切温暖专业' })
 const rules = { name: [{ required: true, message: '请输入酒店名称' }] }
 
-onMounted(async () => { try { const res = await hotelAPI.list(); hotels.value = res.data } catch {} })
+onMounted(async () => {
+  try { const res = await hotelAPI.list(); hotels.value = res.data } catch {}
+  loading.value = false
+})
 
 function showCreate() { form.value = { name: '', brand: '', address: '', phone: '', star_rating: 4, reply_tone: '亲切温暖专业' }; dialogVisible.value = true }
 
@@ -68,5 +83,17 @@ async function handleCreate() {
   } catch (e: any) {
     ElMessage.error(e.response?.data?.detail || '创建失败')
   } finally { saving.value = false }
+}
+
+async function genDemo(h: any) {
+  h._demoLoading = true
+  try {
+    await taskAPI.demoReviews(h.id, 8)
+    ElMessage.success('演示数据已生成！')
+    const res = await hotelAPI.list(); hotels.value = res.data
+  } catch (e: any) {
+    ElMessage.error(e.response?.data?.detail || '生成失败')
+  }
+  h._demoLoading = false
 }
 </script>

@@ -80,6 +80,10 @@ export const submitTaskAPI = {
   list: (hotelId: string) => api.get(`/api/v1/hotels/${hotelId}/submit-tasks`),
 }
 
+export const demoAPI = {
+  setup: () => api.post('/api/v1/demo/setup', null, { timeout: 30000 }),
+}
+
 export const dashboardAPI = {
   summary: () => api.get('/api/v1/dashboard/summary'),
 }
