@@ -67,15 +67,41 @@
 
       <div style="margin-bottom:16px;background:#f5f7fa;padding:16px;border-radius:8px;">
         <h4 style="margin:0 0 12px;color:#303133;">操作步骤</h4>
-        <div style="font-size:13px;color:#606266;line-height:2;">
-          <p style="margin:0;">1. 在<strong>本电脑</strong>的 Chrome/Edge 浏览器中打开
-            <a :href="currentPlatform === 'ctrip' ? 'https://ebooking.ctrip.com/' : currentPlatform === 'meituan' ? 'https://e.meituan.com/' : 'https://hotel.fliggy.com/'" target="_blank" style="color:#6B7FD7;">OTA后台登录页</a>
-          </p>
-          <p style="margin:0;">2. 使用账号密码登录，完成图形验证码等安全验证</p>
-          <p style="margin:0;">3. 登录成功后按 <strong>F12</strong> 打开开发者工具</p>
-          <p style="margin:0;">4. 点击 <strong>Application（应用程序）</strong> → 左侧 <strong>Cookies</strong> → 选择当前域名</p>
-          <p style="margin:0;">5. 在右侧表格中 <strong>Ctrl+A 全选</strong> → <strong>Ctrl+C 复制</strong> 所有行</p>
-          <p style="margin:0;">6. 粘贴到下方文本框，点击「保存Cookie」</p>
+        <!-- Mac Chrome/Edge -->
+        <div style="margin-bottom:12px;">
+          <el-tag size="small" type="primary" style="margin-bottom:8px;">Mac · Chrome / Edge 浏览器</el-tag>
+          <div style="font-size:13px;color:#606266;line-height:2;">
+            <p style="margin:0;">1. 打开
+              <a :href="currentPlatform === 'ctrip' ? 'https://ebooking.ctrip.com/' : currentPlatform === 'meituan' ? 'https://e.meituan.com/' : 'https://hotel.fliggy.com/'" target="_blank" style="color:#6B7FD7;">OTA后台登录页</a>
+              ，登录账号（完成验证码等）
+            </p>
+            <p style="margin:0;">2. 按 <strong>Cmd+Option+I</strong>（⌘⌥I）打开开发者工具</p>
+            <p style="margin:0;">3. 点击顶部 <strong>Application（应用程序）</strong> 标签（如看不到，点 » 展开）</p>
+            <p style="margin:0;">4. 左侧 <strong>Cookies</strong> → 点击 OTA 域名</p>
+            <p style="margin:0;">5. 右侧表格 <strong>Cmd+A 全选</strong> → <strong>Cmd+C 复制</strong></p>
+            <p style="margin:0;">6. 粘贴到下方文本框，点击「保存Cookie」</p>
+          </div>
+        </div>
+        <!-- Mac Safari -->
+        <div style="margin-bottom:12px;">
+          <el-tag size="small" type="warning" style="margin-bottom:8px;">Mac · Safari 浏览器</el-tag>
+          <div style="font-size:13px;color:#606266;line-height:2;">
+            <p style="margin:0;">1. 先开启开发菜单：Safari → 设置 → 高级 → 勾选「在菜单栏显示"开发"菜单」</p>
+            <p style="margin:0;">2. 打开OTA后台登录页，登录账号</p>
+            <p style="margin:0;">3. 按 <strong>Cmd+Option+C</strong>（⌘⌥C）打开 Web 检查器</p>
+            <p style="margin:0;">4. 点击 <strong>Storage（储存）</strong> 标签 → Cookies → 选择域名</p>
+            <p style="margin:0;">5. 选中所有Cookie行 → <strong>Cmd+C 复制</strong></p>
+            <p style="margin:0;">6. 粘贴到下方文本框，点击「保存Cookie」</p>
+          </div>
+        </div>
+        <!-- Windows -->
+        <div>
+          <el-tag size="small" type="info" style="margin-bottom:8px;">Windows · Chrome / Edge 浏览器</el-tag>
+          <div style="font-size:13px;color:#606266;line-height:2;">
+            <p style="margin:0;">1. 打开OTA后台登录页，登录账号 → 按 <strong>F12</strong>（或 Ctrl+Shift+I）</p>
+            <p style="margin:0;">2. <strong>Application</strong> → Cookies → 域名 → Ctrl+A → Ctrl+C</p>
+            <p style="margin:0;">3. 粘贴到下方文本框，保存</p>
+          </div>
         </div>
       </div>
 
