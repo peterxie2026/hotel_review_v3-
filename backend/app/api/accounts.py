@@ -159,8 +159,11 @@ def import_cookies(hotel_id: str, account_id: str, data: dict,
                     cookies_list.append({"name": parts[0].strip(), "value": parts[1].strip()})
 
     if not cookies_list:
-        raise HTTPException(status_code=400, detail=f"无法解析Cookie数据。请确保已正确复制。\n"
-                            "推荐方式：在浏览器控制台执行 copy(JSON.stringify(document.cookie.split('; ')..."
+        raise HTTPException(status_code=400, detail=(
+            "无法解析Cookie数据。请使用推荐方式：在浏览器控制台执行 "
+            "copy(JSON.stringify(document.cookie.split('; ').reduce((a,c)=>{"
+            "const[p,...v]=c.split('=');a.push({name:p,value:v.join('=')});return a},[])))"
+        ))
 
     # 补全缺失的字段
     for c in cookies_list:
