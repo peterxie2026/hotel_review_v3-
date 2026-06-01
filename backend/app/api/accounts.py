@@ -68,88 +68,85 @@ def update_account(hotel_id: str, account_id: str, data: OTAAccountUpdate,
 @router.post("/{account_id}/manual-login")
 async def manual_login(hotel_id: str, account_id: str,
                        current_user: UserInfo = Depends(get_current_user), db: Session = Depends(get_db)):
-    """打开可见浏览器窗口，让用户手动登录解决验证码"""
+    """手动登录指引：返回各平台登录地址，用户在本地浏览器登录后导入Cookie"""
     _get_hotel(hotel_id, current_user.id, db)
     account = db.query(OTAAccount).filter(OTAAccount.id == account_id, OTAAccount.hotel_id == hotel_id).first()
     if not account:
         raise HTTPException(status_code=404, detail="账号不存在")
 
-    # 关闭之前的同名会话
-    if account_id in _manual_login_sessions:
-        old = _manual_login_sessions[account_id]
-        try:
-            await old["context"].close()
-            await old["browser"].close()
-        except Exception:
-            pass
-
-    from app.services.crypto_service import decrypt_password
-    from playwright.async_api import async_playwright
-
-    pw = await async_playwright().start()
-    browser = await pw.chromium.launch(headless=False, args=["--no-sandbox"])
-    context = await browser.new_context(
-        viewport={"width": 1280, "height": 900},
-        user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
-    )
-    page = await context.new_page()
+    platform_name = account.platform.value if hasattr(account.platform, 'value') else str(account.platform)
 
     login_urls = {
         "ctrip": "https://ebooking.ctrip.com/",
         "meituan": "https://e.meituan.com/",
         "fliggy": "https://hotel.fliggy.com/",
     }
-    url = login_urls.get(account.platform.value if hasattr(account.platform, 'value') else str(account.platform),
-                         "http://ebooking.ctrip.com/")
-    await page.goto(url, wait_until="domcontentloaded", timeout=60000)
-
-    _manual_login_sessions[account_id] = {
-        "browser": browser,
-        "context": context,
-        "page": page,
-        "playwright": pw,
-        "account_id": account_id,
-        "started_at": __import__("datetime").datetime.utcnow(),
-    }
+    login_url = login_urls.get(platform_name, "https://ebooking.ctrip.com/")
 
     return {
-        "message": f"浏览器已打开，请在浏览器窗口中手动登录{account.platform}账号。登录完成后点击'完成登录'按钮。",
-        "status": "ready",
+        "platform": platform_name,
+        "login_url": login_url,
+        "instructions": [
+            f"1. 在您当前电脑的浏览器中打开: {login_url}",
+            "2. 使用账号密码登录（完成验证码等操作）",
+            "3. 登录成功后按 F12 打开开发者工具",
+            "4. 切换到 Application（应用程序）→ Cookies",
+            f"5. 找到 {login_url} 域名下的所有Cookie",
+            "6. 全选复制Cookie内容，点击下方「导入Cookie」按钮",
+        ],
+        "status": "instructions",
     }
 
 
-@router.post("/{account_id}/complete-login")
-async def complete_manual_login(hotel_id: str, account_id: str,
-                                current_user: UserInfo = Depends(get_current_user), db: Session = Depends(get_db)):
-    """手动登录完成后，保存cookie并关闭浏览器"""
+@router.post("/{account_id}/import-cookies")
+def import_cookies(hotel_id: str, account_id: str, data: dict,
+                   current_user: UserInfo = Depends(get_current_user), db: Session = Depends(get_db)):
+    """手动导入Cookie JSON（从浏览器开发者工具复制）"""
     _get_hotel(hotel_id, current_user.id, db)
     account = db.query(OTAAccount).filter(OTAAccount.id == account_id, OTAAccount.hotel_id == hotel_id).first()
     if not account:
         raise HTTPException(status_code=404, detail="账号不存在")
 
-    session = _manual_login_sessions.pop(account_id, None)
-    if not session:
-        raise HTTPException(status_code=400, detail="没有进行中的手动登录会话")
+    cookies_text = data.get("cookies", "")
+    if not cookies_text:
+        raise HTTPException(status_code=400, detail="请粘贴Cookie内容")
 
+    # 支持多种格式：JSON数组、JSON对象、或者直接复制
     try:
-        cookies = await session["context"].cookies()
-        account.cookies_json = json.dumps(cookies)
-        account.last_login_at = __import__("datetime").datetime.utcnow()
-        db.commit()
+        cookies_list = json.loads(cookies_text)
+    except json.JSONDecodeError:
+        # 尝试解析常见的Cookie导出格式
+        cookies_list = []
+        for line in cookies_text.strip().split("\n"):
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            parts = line.split("\t")
+            if len(parts) >= 7:
+                cookies_list.append({
+                    "name": parts[5],
+                    "value": parts[6],
+                    "domain": parts[0].lstrip("."),
+                    "path": parts[2],
+                    "expires": float(parts[4]) if parts[4] != "0" else -1,
+                })
 
-        await session["context"].close()
-        await session["browser"].close()
-        await session["playwright"].stop()
+    if not isinstance(cookies_list, list) or len(cookies_list) == 0:
+        raise HTTPException(status_code=400, detail="Cookie格式错误，请复制JSON数组格式的Cookie")
 
-        return {"message": "登录完成，Cookie已保存", "status": "completed", "cookie_count": len(cookies)}
-    except Exception as e:
-        try:
-            await session["context"].close()
-            await session["browser"].close()
-            await session["playwright"].stop()
-        except Exception:
-            pass
-        raise HTTPException(status_code=500, detail=f"保存失败: {str(e)}")
+    account.cookies_json = json.dumps(cookies_list)
+    account.last_login_at = __import__("datetime").datetime.utcnow()
+    db.commit()
+
+    return {"message": f"Cookie导入成功，共 {len(cookies_list)} 条", "status": "completed", "cookie_count": len(cookies_list)}
+
+
+@router.post("/{account_id}/complete-login")
+async def complete_manual_login(hotel_id: str, account_id: str,
+                                current_user: UserInfo = Depends(get_current_user), db: Session = Depends(get_db)):
+    """手动登录完成后，保存cookie并关闭浏览器（已废弃，保留兼容）"""
+    _get_hotel(hotel_id, current_user.id, db)
+    return {"message": "请使用「导入Cookie」功能代替", "status": "deprecated", "cookie_count": 0}
 
 
 @router.delete("/{account_id}")

@@ -41,6 +41,7 @@ export const accountAPI = {
   update: (hotelId: string, accId: string, data: any) => api.put(`/api/v1/hotels/${hotelId}/accounts/${accId}`, data),
   delete: (hotelId: string, accId: string) => api.delete(`/api/v1/hotels/${hotelId}/accounts/${accId}`),
   manualLogin: (hotelId: string, accId: string) => api.post(`/api/v1/hotels/${hotelId}/accounts/${accId}/manual-login`),
+  importCookies: (hotelId: string, accId: string, cookies: string) => api.post(`/api/v1/hotels/${hotelId}/accounts/${accId}/import-cookies`, { cookies }),
   completeLogin: (hotelId: string, accId: string) => api.post(`/api/v1/hotels/${hotelId}/accounts/${accId}/complete-login`),
 }
 

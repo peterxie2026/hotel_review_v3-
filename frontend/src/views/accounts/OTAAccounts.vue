@@ -15,9 +15,11 @@
           </template>
         </el-table-column>
         <el-table-column prop="username" label="用户名" width="200" />
-        <el-table-column label="状态" width="120">
+        <el-table-column label="Cookie" width="100">
           <template #default="{row}">
-            <el-tag size="small" :type="row.is_active ? 'success' : 'info'">{{ row.is_active ? '启用' : '停用' }}</el-tag>
+            <el-tag size="small" :type="row.last_login_at ? 'success' : 'info'">
+              {{ row.last_login_at ? '已导入' : '未导入' }}
+            </el-tag>
           </template>
         </el-table-column>
         <el-table-column label="最后登录" width="180">
@@ -26,17 +28,17 @@
         <el-table-column label="最后抓取" width="180">
           <template #default="{row}">{{ row.last_scrape_at ? new Date(row.last_scrape_at).toLocaleString('zh-CN') : '从未抓取' }}</template>
         </el-table-column>
-        <el-table-column label="操作" width="280" fixed="right">
+        <el-table-column label="操作" width="240" fixed="right">
           <template #default="{row}">
             <el-button link type="primary" size="small" @click="editAccount(row)">编辑</el-button>
-            <el-button link type="warning" size="small" :loading="row._loginLoading" @click="startManualLogin(row)">手动登录</el-button>
-            <el-button link type="success" size="small" :loading="row._completeLoading" @click="completeManualLogin(row)">完成登录</el-button>
+            <el-button link type="success" size="small" @click="showCookieDialog(row)">导入Cookie</el-button>
             <el-button link type="danger" size="small" @click="deleteAccount(row)">删除</el-button>
           </template>
         </el-table-column>
       </el-table>
     </el-card>
 
+    <!-- 添加/编辑账号弹窗 -->
     <el-dialog v-model="dialogVisible" :title="editingId ? '编辑账号' : '添加账号'" width="450px">
       <el-form :model="form" ref="formRef" label-width="80px">
         <el-form-item label="平台" prop="platform" required>
@@ -48,12 +50,44 @@
         </el-form-item>
         <el-form-item label="用户名" prop="username" required><el-input v-model="form.username" /></el-form-item>
         <el-form-item label="密码" prop="password" :required="!editingId">
-          <el-input v-model="form.password" type="password" show-password :placeholder="editingId ? '留空则不修改' : '输入OTA后台密码'" />
+          <el-input v-model="form.password" type="password" show-password :placeholder="editingId ? '留空则不修改' : '输入OTA后台密码（用于自动登录）'" />
         </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="dialogVisible = false">取消</el-button>
         <el-button type="primary" :loading="saving" @click="saveAccount">保存</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- Cookie导入弹窗 -->
+    <el-dialog v-model="cookieDialogVisible" title="导入Cookie" width="650px">
+      <el-alert type="warning" :closable="false" show-icon style="margin-bottom:16px;">
+        <template #title>首次使用需要手动登录获取Cookie，后续系统将使用Cookie自动操作</template>
+      </el-alert>
+
+      <div style="margin-bottom:16px;background:#f5f7fa;padding:16px;border-radius:8px;">
+        <h4 style="margin:0 0 12px;color:#303133;">操作步骤</h4>
+        <div style="font-size:13px;color:#606266;line-height:2;">
+          <p style="margin:0;">1. 在<strong>本电脑</strong>的 Chrome/Edge 浏览器中打开
+            <a :href="currentPlatform === 'ctrip' ? 'https://ebooking.ctrip.com/' : currentPlatform === 'meituan' ? 'https://e.meituan.com/' : 'https://hotel.fliggy.com/'" target="_blank" style="color:#6B7FD7;">OTA后台登录页</a>
+          </p>
+          <p style="margin:0;">2. 使用账号密码登录，完成图形验证码等安全验证</p>
+          <p style="margin:0;">3. 登录成功后按 <strong>F12</strong> 打开开发者工具</p>
+          <p style="margin:0;">4. 点击 <strong>Application（应用程序）</strong> → 左侧 <strong>Cookies</strong> → 选择当前域名</p>
+          <p style="margin:0;">5. 在右侧表格中 <strong>Ctrl+A 全选</strong> → <strong>Ctrl+C 复制</strong> 所有行</p>
+          <p style="margin:0;">6. 粘贴到下方文本框，点击「保存Cookie」</p>
+        </div>
+      </div>
+
+      <el-form label-width="80px">
+        <el-form-item label="Cookie数据">
+          <el-input v-model="cookieText" type="textarea" :rows="8"
+            placeholder="粘贴从浏览器开发者工具中复制的Cookie数据（支持JSON数组格式或浏览器导出的表格格式）" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="cookieDialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="cookieSaving" @click="saveCookies">保存Cookie</el-button>
       </template>
     </el-dialog>
   </div>
@@ -74,6 +108,12 @@ const editingId = ref('')
 const saving = ref(false)
 const formRef = ref()
 const form = reactive({ platform: 'ctrip', username: '', password: '' })
+
+const cookieDialogVisible = ref(false)
+const cookieText = ref('')
+const cookieSaving = ref(false)
+const currentAccountId = ref('')
+const currentPlatform = ref('ctrip')
 
 function platformType(p: string) { return { ctrip: '', meituan: 'warning', fliggy: 'danger' }[p] || '' }
 function platformLabel(p: string) { return { ctrip: '携程', meituan: '美团', fliggy: '飞猪' }[p] || p }
@@ -114,23 +154,28 @@ async function saveAccount() {
   saving.value = false
 }
 
-async function startManualLogin(row: any) {
-  row._loginLoading = true
-  try {
-    const res = await accountAPI.manualLogin(hotelId, row.id)
-    ElMessage.success('浏览器已打开，请在弹出的浏览器窗口中手动登录并完成验证码，登录后点击"完成登录"')
-  } catch (e: any) { ElMessage.error(e.response?.data?.detail || '打开失败') }
-  row._loginLoading = false
+function showCookieDialog(row: any) {
+  currentAccountId.value = row.id
+  currentPlatform.value = row.platform
+  cookieText.value = ''
+  cookieDialogVisible.value = true
 }
 
-async function completeManualLogin(row: any) {
-  row._completeLoading = true
+async function saveCookies() {
+  if (!cookieText.value.trim()) {
+    ElMessage.warning('请先粘贴Cookie数据')
+    return
+  }
+  cookieSaving.value = true
   try {
-    const res = await accountAPI.completeLogin(hotelId, row.id)
-    ElMessage.success(`登录成功！已保存 ${res.data.cookie_count} 个Cookie，后续可自动抓取`)
+    const res = await accountAPI.importCookies(hotelId, currentAccountId.value, cookieText.value)
+    ElMessage.success(`Cookie导入成功！共 ${res.data.cookie_count} 条，后续可自动抓取和回复`)
+    cookieDialogVisible.value = false
     loadAccounts()
-  } catch (e: any) { ElMessage.error(e.response?.data?.detail || '保存失败，请确认已登录成功') }
-  row._completeLoading = false
+  } catch (e: any) {
+    ElMessage.error(e.response?.data?.detail || '导入失败，请检查Cookie格式')
+  }
+  cookieSaving.value = false
 }
 
 async function deleteAccount(row: any) {
