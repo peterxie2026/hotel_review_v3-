@@ -111,28 +111,74 @@ def import_cookies(hotel_id: str, account_id: str, data: dict,
     if not cookies_text:
         raise HTTPException(status_code=400, detail="请粘贴Cookie内容")
 
-    # 支持多种格式：JSON数组、JSON对象、或者直接复制
+    platform_name = account.platform.value if hasattr(account.platform, 'value') else str(account.platform)
+    default_domains = {
+        "ctrip": ".ctrip.com",
+        "meituan": ".meituan.com",
+        "fliggy": ".fliggy.com",
+    }
+    default_domain = default_domains.get(platform_name, ".ctrip.com")
+
+    cookies_list = []
+
+    # 尝试1: 解析JSON
     try:
-        cookies_list = json.loads(cookies_text)
+        parsed = json.loads(cookies_text)
+        if isinstance(parsed, list):
+            cookies_list = parsed
+        elif isinstance(parsed, dict):
+            cookies_list = [parsed]
     except json.JSONDecodeError:
-        # 尝试解析常见的Cookie导出格式
-        cookies_list = []
+        pass
+
+    # 尝试2: 解析表格式复制（Chrome/Safari DevTools表格复制）
+    if not cookies_list:
         for line in cookies_text.strip().split("\n"):
             line = line.strip()
-            if not line or line.startswith("#"):
+            if not line or line.startswith("#") or line.startswith("//"):
                 continue
             parts = line.split("\t")
             if len(parts) >= 7:
                 cookies_list.append({
-                    "name": parts[5],
-                    "value": parts[6],
-                    "domain": parts[0].lstrip("."),
-                    "path": parts[2],
+                    "name": parts[5].strip(),
+                    "value": parts[6].strip(),
+                    "domain": parts[0].strip().lstrip("."),
+                    "path": parts[2].strip(),
                     "expires": float(parts[4]) if parts[4] != "0" else -1,
                 })
 
-    if not isinstance(cookies_list, list) or len(cookies_list) == 0:
-        raise HTTPException(status_code=400, detail="Cookie格式错误，请复制JSON数组格式的Cookie")
+    # 尝试3: 解析 name=value 格式（每行一个）
+    if not cookies_list:
+        for line in cookies_text.strip().split("\n"):
+            line = line.strip()
+            if not line or line.startswith("#") or line.startswith("//"):
+                continue
+            if "=" in line and not line.startswith("{"):
+                parts = line.split("=", 1)
+                if len(parts) == 2:
+                    cookies_list.append({"name": parts[0].strip(), "value": parts[1].strip()})
+
+    if not cookies_list:
+        raise HTTPException(status_code=400, detail=f"无法解析Cookie数据。请确保已正确复制。\n"
+                            "推荐方式：在浏览器控制台执行 copy(JSON.stringify(document.cookie.split('; ')..."
+
+    # 补全缺失的字段
+    for c in cookies_list:
+        if "name" not in c or not c["name"]:
+            raise HTTPException(status_code=400, detail="Cookie缺少name字段，请检查数据格式")
+        if "value" not in c:
+            c["value"] = ""
+        if "domain" not in c or not c.get("domain"):
+            c["domain"] = default_domain
+        if "path" not in c or not c.get("path"):
+            c["path"] = "/"
+        # Playwright要求 httpOnly 和 secure 字段
+        if "httpOnly" not in c:
+            c["httpOnly"] = False
+        if "secure" not in c:
+            c["secure"] = False
+        if "sameSite" not in c:
+            c["sameSite"] = "Lax"
 
     account.cookies_json = json.dumps(cookies_list)
     account.last_login_at = __import__("datetime").datetime.utcnow()
