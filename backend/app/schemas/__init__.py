@@ -45,7 +45,7 @@ class HotelCreate(BaseModel):
     room_count: Optional[int] = None
     highlights: List[str] = []
     reply_tone: str = "亲切温暖专业"
-    ai_provider: str = "deepseek"
+    ai_provider: str = "minimax"
     ai_model: str = ""
 
 
@@ -77,7 +77,7 @@ class HotelResponse(BaseModel):
     room_count: Optional[int]
     highlights: List[str]
     reply_tone: str
-    ai_provider: str = "deepseek"
+    ai_provider: str = "minimax"
     ai_model: str = ""
     is_active: bool
     schedule_config: Optional[dict] = None
@@ -278,6 +278,62 @@ class SubmitTaskResponse(BaseModel):
     progress_message: Optional[str] = None
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+# ===== Subscription =====
+class SubscriptionPlanResponse(BaseModel):
+    id: str
+    name: str
+    code: str
+    description: Optional[str] = None
+    features: list = []
+    hotel_limit: int = 1
+    review_limit_monthly: int = 100
+    ai_provider_limit: str = "basic"
+    ota_platforms: list = []
+    price_monthly: int = 0
+    price_yearly: int = 0
+    sort_order: int = 0
+    is_active: bool = True
+
+    class Config:
+        from_attributes = True
+
+
+class UserSubscriptionResponse(BaseModel):
+    id: str
+    user_id: str
+    plan: SubscriptionPlanResponse
+    status: str
+    trial_end_at: Optional[datetime] = None
+    current_period_start: Optional[datetime] = None
+    current_period_end: Optional[datetime] = None
+    auto_renew: bool = False
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class SubscribeRequest(BaseModel):
+    plan_id: str
+    billing_period: str = "monthly"  # monthly / yearly
+
+
+class PaymentOrderResponse(BaseModel):
+    id: str
+    user_id: str
+    plan: SubscriptionPlanResponse
+    amount: int = 0
+    payment_method: str = "manual"
+    status: str = "pending"
+    transaction_id: Optional[str] = None
+    admin_note: Optional[str] = None
+    paid_at: Optional[datetime] = None
     created_at: datetime
 
     class Config:
