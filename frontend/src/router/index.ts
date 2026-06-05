@@ -15,6 +15,9 @@ const routes = [
       { path: 'hotels/:hotelId/reviews', name: 'ReviewList', component: () => import('../views/reviews/ReviewList.vue') },
       { path: 'hotels/:hotelId/report', name: 'ReviewReport', component: () => import('../views/reviews/Report.vue') },
       { path: 'hotels/:hotelId/accounts', name: 'OTAAccounts', component: () => import('../views/accounts/OTAAccounts.vue') },
+      { path: 'subscription/plans', name: 'SubscriptionPlans', component: () => import('../views/subscription/Plans.vue') },
+      { path: 'subscription/my', name: 'MySubscription', component: () => import('../views/subscription/MySubscription.vue') },
+      { path: 'subscription/orders', name: 'SubscriptionOrders', component: () => import('../views/subscription/Orders.vue') },
     ],
   },
 ]
