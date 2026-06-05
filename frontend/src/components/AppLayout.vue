@@ -30,6 +30,11 @@
         </template>
       </el-menu>
       <div style="position:absolute;bottom:20px;left:16px;right:16px;">
+        <div style="color:#a0a4b8;font-size:12px;margin-bottom:4px;">
+          <router-link to="/subscription/my" style="color:#a0a4b8;text-decoration:none;">
+            <el-icon style="vertical-align:middle;"><Wallet /></el-icon> 订阅管理
+          </router-link>
+        </div>
         <div style="color:#a0a4b8;font-size:12px;margin-bottom:8px;">{{ auth.user?.username }}</div>
         <el-button text size="small" style="color:#a0a4b8;width:100%;" @click="handleLogout">退出登录</el-button>
       </div>
