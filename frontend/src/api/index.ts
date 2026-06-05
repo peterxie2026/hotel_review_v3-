@@ -42,6 +42,7 @@ export const accountAPI = {
   delete: (hotelId: string, accId: string) => api.delete(`/api/v1/hotels/${hotelId}/accounts/${accId}`),
   manualLogin: (hotelId: string, accId: string) => api.post(`/api/v1/hotels/${hotelId}/accounts/${accId}/manual-login`),
   importCookies: (hotelId: string, accId: string, cookies: string) => api.post(`/api/v1/hotels/${hotelId}/accounts/${accId}/import-cookies`, { cookies }),
+  testCookies: (hotelId: string, accId: string) => api.post(`/api/v1/hotels/${hotelId}/accounts/${accId}/test-cookies`),
   completeLogin: (hotelId: string, accId: string) => api.post(`/api/v1/hotels/${hotelId}/accounts/${accId}/complete-login`),
 }
 
@@ -87,6 +88,16 @@ export const demoAPI = {
 
 export const dashboardAPI = {
   summary: () => api.get('/api/v1/dashboard/summary'),
+}
+
+export const subscriptionAPI = {
+  plans: () => api.get('/api/v1/subscription/plans'),
+  my: () => api.get('/api/v1/subscription/my'),
+  subscribe: (planId: string, period: string = 'monthly') => api.post('/api/v1/subscription/subscribe', { plan_id: planId, billing_period: period }),
+  cancel: () => api.post('/api/v1/subscription/cancel'),
+  orders: () => api.get('/api/v1/subscription/orders'),
+  orderDetail: (orderId: string) => api.get(`/api/v1/subscription/orders/${orderId}`),
+  checkOrder: (orderId: string) => api.post(`/api/v1/subscription/orders/${orderId}/check`),
 }
 
 export default api
