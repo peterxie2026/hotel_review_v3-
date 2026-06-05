@@ -155,20 +155,22 @@ def get_report(
     negative_count = sum(1 for r in filtered_reviews if r.rating and r.rating <= 2.5)
     neutral_count = len(filtered_reviews) - positive_count - negative_count
 
-    # 最近5条
+    # 最近10条
     recent = sorted(
         [r for r in reviews if r.review_date],
         key=lambda r: r.review_date,
         reverse=True,
-    )[:5]
+    )[:10]
     recent_list = [
         {
             "id": r.id,
             "guest_name": r.guest_name or "匿名",
             "rating": r.rating or 0,
-            "content": (r.content or "")[:80] + ("..." if r.content and len(r.content) > 80 else ""),
+            "content": (r.content or "")[:200] + ("..." if r.content and len(r.content) > 200 else ""),
             "status": r.status.value if r.status else "unknown",
             "review_date": r.review_date.isoformat() if r.review_date else None,
+            "reply_text": (r.replies[0].edited_text or r.replies[0].ai_text)
+                if r.replies and len(r.replies) > 0 else "",
         }
         for r in recent
     ]

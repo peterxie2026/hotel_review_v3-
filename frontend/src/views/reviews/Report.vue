@@ -149,17 +149,20 @@
       </el-card>
 
       <!-- 最近点评 -->
-      <el-card header="最近5条点评" style="margin-top:16px;border-radius:12px;">
-        <div v-for="r in report?.recent_reviews" :key="r.id" style="display:flex;justify-content:space-between;align-items:center;padding:12px 0;border-bottom:1px solid #f0f2f5;">
-          <div style="flex:1;">
-            <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">
+      <el-card header="最近10条点评" style="margin-top:16px;border-radius:12px;">
+        <div v-for="r in report?.recent_reviews" :key="r.id" style="padding:12px 0;border-bottom:1px solid #f0f2f5;">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
+            <div style="display:flex;align-items:center;gap:8px;">
               <span style="font-size:13px;font-weight:500;">{{ r.guest_name }}</span>
               <el-rate :model-value="r.rating" disabled size="small" />
               <el-tag size="small" :type="r.status==='replied'?'success':'warning'">{{ r.status==='replied'?'已回复':'待回复' }}</el-tag>
             </div>
-            <div style="font-size:13px;color:#606266;">{{ r.content }}</div>
+            <span style="font-size:12px;color:#909399;white-space:nowrap;">{{ r.review_date ? new Date(r.review_date).toLocaleDateString('zh-CN') : '' }}</span>
           </div>
-          <span style="font-size:12px;color:#909399;margin-left:16px;white-space:nowrap;">{{ r.review_date ? new Date(r.review_date).toLocaleDateString('zh-CN') : '' }}</span>
+          <div style="font-size:13px;color:#606266;margin-bottom:4px;">{{ r.content }}</div>
+          <div v-if="r.reply_text" style="font-size:13px;color:#6B7FD7;background:#f5f7ff;padding:6px 10px;border-radius:6px;border-left:3px solid #6B7FD7;">
+            <span style="font-weight:500;">回复：</span>{{ r.reply_text }}
+          </div>
         </div>
       </el-card>
     </div>

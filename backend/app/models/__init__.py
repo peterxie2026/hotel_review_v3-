@@ -78,7 +78,7 @@ class Hotel(Base):
     highlights = Column(JSON, default=list)
     reply_tone = Column(String(64), default="亲切温暖专业")
     schedule_config = Column(JSON, default=dict)  # {"auto_scrape":{"enabled":false,"times":["09:00","18:00"]},"auto_reply":{"enabled":false,"time":"10:00"}}
-    ai_provider = Column(String(32), default="deepseek")  # deepseek/qwen/minimax/zhipu
+    ai_provider = Column(String(32), default="minimax")  # deepseek/qwen/minimax/zhipu
     ai_model = Column(String(64), default="")  # 空则用provider默认模型
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -197,6 +197,8 @@ class ScrapeTask(Base):
     completed_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
+    hotel = relationship("Hotel")
+
 
 class SubmitTask(Base):
     __tablename__ = "submit_tasks"
@@ -214,3 +216,76 @@ class SubmitTask(Base):
     started_at = Column(DateTime, nullable=True)
     completed_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    hotel = relationship("Hotel")
+
+
+# ===== 订阅系统 =====
+
+class SubscriptionStatus(str, enum.Enum):
+    trialing = "trialing"
+    active = "active"
+    expired = "expired"
+    cancelled = "cancelled"
+
+
+class PaymentStatus(str, enum.Enum):
+    pending = "pending"
+    paid = "paid"
+    failed = "failed"
+    refunded = "refunded"
+
+
+class SubscriptionPlan(Base):
+    __tablename__ = "subscription_plans"
+
+    id = Column(String(36), primary_key=True, default=gen_uuid)
+    name = Column(String(128), nullable=False)
+    code = Column(String(32), unique=True, nullable=False)
+    description = Column(Text, nullable=True)
+    features = Column(JSON, default=list)
+    hotel_limit = Column(Integer, default=1)
+    review_limit_monthly = Column(Integer, default=100)
+    ai_provider_limit = Column(String(32), default="basic")
+    ota_platforms = Column(JSON, default=list)
+    price_monthly = Column(Integer, default=0)  # 分
+    price_yearly = Column(Integer, default=0)  # 分
+    sort_order = Column(Integer, default=0)
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class UserSubscription(Base):
+    __tablename__ = "user_subscriptions"
+
+    id = Column(String(36), primary_key=True, default=gen_uuid)
+    user_id = Column(String(36), ForeignKey("users.id"), nullable=False, unique=True)
+    plan_id = Column(String(36), ForeignKey("subscription_plans.id"), nullable=False)
+    status = Column(SAEnum(SubscriptionStatus), default=SubscriptionStatus.trialing)
+    trial_end_at = Column(DateTime, nullable=True)
+    current_period_start = Column(DateTime, nullable=True)
+    current_period_end = Column(DateTime, nullable=True)
+    auto_renew = Column(Boolean, default=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    user = relationship("User", backref="subscription")
+    plan = relationship("SubscriptionPlan")
+
+
+class PaymentOrder(Base):
+    __tablename__ = "payment_orders"
+
+    id = Column(String(36), primary_key=True, default=gen_uuid)
+    user_id = Column(String(36), ForeignKey("users.id"), nullable=False)
+    plan_id = Column(String(36), ForeignKey("subscription_plans.id"), nullable=False)
+    amount = Column(Integer, nullable=False)  # 分
+    payment_method = Column(String(32), default="manual")
+    status = Column(SAEnum(PaymentStatus), default=PaymentStatus.pending)
+    transaction_id = Column(String(128), nullable=True)
+    admin_note = Column(Text, nullable=True)
+    paid_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    user = relationship("User", backref="payment_orders")
+    plan = relationship("SubscriptionPlan")

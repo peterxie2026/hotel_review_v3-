@@ -10,6 +10,53 @@ from app.services.crypto_service import encrypt_password
 Base.metadata.create_all(bind=engine)
 db = SessionLocal()
 
+# === 创建订阅套餐 ===
+plans = [
+    {
+        "code": "free_trial", "name": "免费基础版", "sort_order": 1,
+        "description": "适合体验系统功能，管理一家酒店的基础点评需求",
+        "features": ["1家酒店", "30条点评/月", "AI基础回复", "携程平台"],
+        "hotel_limit": 1, "review_limit_monthly": 30,
+        "ai_provider_limit": "basic", "ota_platforms": ["ctrip"],
+        "price_monthly": 0, "price_yearly": 0,
+    },
+    {
+        "code": "basic", "name": "标准版", "sort_order": 2,
+        "description": "适合小型酒店，满足日常点评管理需求",
+        "features": ["2家酒店", "150条点评/月", "AI智能回复", "携程+美团", "数据报告"],
+        "hotel_limit": 2, "review_limit_monthly": 150,
+        "ai_provider_limit": "deepseek", "ota_platforms": ["ctrip", "meituan"],
+        "price_monthly": 5900, "price_yearly": 59000,
+    },
+    {
+        "code": "pro", "name": "专业版", "sort_order": 3,
+        "description": "适合中大型酒店或连锁，全面覆盖OTA平台，不限点评量",
+        "features": ["5家酒店", "不限点评量", "AI高级回复", "全OTA平台（携程/美团/飞猪）", "自定义知识库", "数据报告"],
+        "hotel_limit": 5, "review_limit_monthly": 99999,
+        "ai_provider_limit": "advanced", "ota_platforms": ["ctrip", "meituan", "fliggy"],
+        "price_monthly": 19900, "price_yearly": 199000,
+    },
+    {
+        "code": "enterprise", "name": "企业版", "sort_order": 4,
+        "description": "适合大型酒店集团，不限酒店数量和点评量",
+        "features": ["不限酒店", "不限点评量", "AI高级回复+自定义模型", "全OTA平台", "专属知识库", "优先技术支持"],
+        "hotel_limit": 9999, "review_limit_monthly": 99999,
+        "ai_provider_limit": "advanced", "ota_platforms": ["ctrip", "meituan", "fliggy"],
+        "price_monthly": 99900, "price_yearly": 999000,
+    },
+]
+for p in plans:
+    existing = db.query(SubscriptionPlan).filter(SubscriptionPlan.code == p["code"]).first()
+    if existing:
+        # 更新已有套餐
+        for key, val in p.items():
+            setattr(existing, key, val)
+        print(f"更新订阅套餐: {p['name']}")
+    else:
+        db.add(SubscriptionPlan(**p))
+        print(f"创建订阅套餐: {p['name']}")
+db.flush()
+
 # === 创建默认用户 ===
 user = db.query(User).filter(User.username == "peter").first()
 if not user:
@@ -38,7 +85,7 @@ if not langzhong:
         star_rating=5,
         room_count=200,
         highlights=["嘉陵江畔", "五星级", "明宇旗下高端品牌", "会议设施齐全", "中餐厅川菜"],
-        reply_tone="亲切温暖专业",
+        reply_tone="亲切温暖专业", ai_provider="minimax",
     )
     db.add(langzhong)
     db.flush()
