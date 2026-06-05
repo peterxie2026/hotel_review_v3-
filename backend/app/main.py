@@ -13,6 +13,7 @@ from app.api.reviews import router as reviews_router
 from app.api.tasks import router as tasks_router
 from app.api.report import router as report_router
 from app.api.dashboard import router as dashboard_router
+from app.api.subscription import router as subscription_router
 from app.browser import get_browser_pool
 
 
@@ -66,6 +67,7 @@ app.include_router(reviews_router)
 app.include_router(tasks_router)
 app.include_router(report_router)
 app.include_router(dashboard_router)
+app.include_router(subscription_router)
 
 
 @app.get("/api/health")
